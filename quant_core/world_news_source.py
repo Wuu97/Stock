@@ -79,27 +79,6 @@ def _gdelt_result(payload, received_at, request_key, cache_path, attempts) -> Gd
     return GdeltFetch(documents, request_key, str(cache_path), artifact_hash, attempts)
 
 
-def reliefweb_reports(query: str, received_at: datetime, app_name: str, limit: int = 50) -> tuple[NewsDocument, ...]:
-    """Fetch curated conflict/disaster reports from the UN OCHA ReliefWeb API."""
-    if not app_name.strip():
-        raise ValueError("ReliefWeb app_name is required")
-    params = urlencode({"appname": app_name, "limit": limit, "query[value]": query,
-                        "fields[include][]": ["title", "body", "date.created", "url", "source.name"]}, doseq=True)
-    payload = _get_json("https://api.reliefweb.int/v2/reports?" + params)
-    records = payload.get("data", [])
-    if not isinstance(records, list):
-        raise RuntimeError("ReliefWeb response is missing data")
-    documents = []
-    for record in records:
-        fields = record.get("fields", {})
-        if not fields.get("title") or not fields.get("date", {}).get("created"):
-            continue
-        documents.append(NewsDocument("reliefweb_reports", "MACRO", _parse_news_time(fields["date"]["created"]), received_at,
-                                      str(fields["title"]), str(fields.get("body") or fields["title"]),
-                                      external_id=str(record.get("id")), source_url=fields.get("url")))
-    return tuple(documents)
-
-
 def _get_json(url: str) -> dict[str, Any]:
     try:
         with urlopen(url, timeout=20) as response:

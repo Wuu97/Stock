@@ -8,17 +8,16 @@ import duckdb
 
 from quant_core.akshare_source import cls_flash_news, stock_announcements, stock_news
 from quant_core.news import NewsArchive
-from quant_core.world_news_source import gdelt_articles_cached, reliefweb_reports
+from quant_core.world_news_source import gdelt_articles_cached
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--db", required=True)
-    parser.add_argument("--source", required=True, choices=("stock", "announcements", "cls", "gdelt", "reliefweb"))
+    parser.add_argument("--source", required=True, choices=("stock", "announcements", "cls", "gdelt"))
     parser.add_argument("--ticker")
     parser.add_argument("--date")
     parser.add_argument("--query")
-    parser.add_argument("--reliefweb-app-name")
     parser.add_argument("--cache-dir", default="data/news_cache")
     args = parser.parse_args()
     now = datetime.now(timezone.utc)
@@ -37,10 +36,6 @@ def main() -> None:
             raise ValueError("--query is required for GDELT")
         gdelt_fetch = gdelt_articles_cached(args.query, now, Path(args.cache_dir))
         documents = gdelt_fetch.documents
-    else:
-        if not args.query or not args.reliefweb_app_name:
-            raise ValueError("--query and --reliefweb-app-name are required for ReliefWeb")
-        documents = reliefweb_reports(args.query, now, args.reliefweb_app_name)
     connection = duckdb.connect(args.db)
     try:
         archive = NewsArchive(connection)
