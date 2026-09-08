@@ -12,6 +12,7 @@ dependencies = ["duckdb>=1.0.0", "pytz>=2024.1", "streamlit>=1.39.0"]
 [project.optional-dependencies]
 dev = ["pytest>=8.0.0"]
 data = ["baostock>=0.8.9", "akshare>=1.18.0", "tushare>=1.4.24"]
+ml = ["lightgbm>=4.0.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
