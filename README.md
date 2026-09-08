@@ -14,7 +14,14 @@
 
 `generate_daily_report.py` 输出统一日报，列出每个推荐批次、成交/拒绝/待处理订单、拒绝原因及指定模拟账户的 NAV。
 
-本地模拟盘看板可运行 `python scripts/run_dashboard.py --db data/top50/quant.duckdb --account-id top50_forward_account`，然后打开 `http://127.0.0.1:8501`。页面仅读取 DuckDB，展示持仓、当前浮盈亏、待执行风控卖单、最近冻结推荐、账户净值与统一风控参数，不会修改交易或账本记录。
+本地模拟盘看板使用 Streamlit，只读 DuckDB，不会修改交易或账本记录。首次运行安装项目依赖后执行：
+
+```bash
+python -m pip install -e .
+streamlit run scripts/streamlit_dashboard.py -- --db data/top50/quant.duckdb --account-id top50_forward_account
+```
+
+打开 `http://127.0.0.1:8501` 即可查看 Overview、NAV、Positions、Recommendations、Risk 与 Activity。项目级 `.streamlit/config.toml` 已将服务限制为本机访问，并关闭 Streamlit 首次启动时的统计/邮件提示。
 
 `run_signal_study.py` 可在不含涨跌停价的免费历史 K 线上执行滚动信号研究：每个信号仅使用当日及之前的行情，输出 T+1/T+5/T+20 收盘方向统计。它不是成交回测，不能替代后续的严格模拟交易。
 
