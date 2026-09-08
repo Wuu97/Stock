@@ -68,6 +68,27 @@ def load_dashboard(connection, account_id: str) -> dict:
     }
 
 
+def load_activity(connection, account_id: str) -> dict:
+    """Return immutable order, execution and rejection records for presentation."""
+    orders = connection.execute(
+        "SELECT target_trade_date, ticker, direction, target_shares, order_status, reject_reason_code "
+        "FROM sim_order_intents WHERE account_id = ? ORDER BY created_at DESC LIMIT 100", [account_id]
+    ).fetchall()
+    executions = connection.execute(
+        "SELECT trade_date, ticker, direction, deal_price_unadj, deal_shares, gross_amount "
+        "FROM sim_executions WHERE account_id = ? ORDER BY created_at DESC LIMIT 100", [account_id]
+    ).fetchall()
+    rejects = connection.execute(
+        "SELECT COALESCE(reject_reason_code, 'UNKNOWN'), COUNT(*) FROM sim_order_intents "
+        "WHERE account_id = ? AND order_status = 'REJECTED' GROUP BY 1 ORDER BY 2 DESC", [account_id]
+    ).fetchall()
+    return {
+        "orders": [dict(zip(("date", "ticker", "direction", "shares", "status", "reason"), map(_display, row))) for row in orders],
+        "executions": [dict(zip(("date", "ticker", "direction", "price", "shares", "amount"), map(_display, row))) for row in executions],
+        "reject_reasons": [{"reason": reason, "count": count} for reason, count in rejects],
+    }
+
+
 def _return(close, cost, shares):
     if close is None or not shares or not cost:
         return None
@@ -76,3 +97,7 @@ def _return(close, cost, shares):
 
 def _number(value):
     return None if value is None else float(value)
+
+
+def _display(value):
+    return str(value) if hasattr(value, "isoformat") else _number(value) if isinstance(value, Decimal) else value

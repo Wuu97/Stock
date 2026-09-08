@@ -27,7 +27,8 @@ class BacktestConfig:
 
 def replay_daily_strategy(connection, bars: Iterable[DayBar], trading_days: Sequence[date],
                           config: BacktestConfig, fee: FeeModel, exit_rule: ExitRule,
-                          allowed_tickers: Optional[Set[str]] = None) -> dict:
+                          allowed_tickers: Optional[Set[str]] = None,
+                          universe_by_date: Optional[Mapping[date, Set[str]]] = None) -> dict:
     """Replay decisions at each close and execute them at the following open.
 
     `bars` must already contain provider-supplied limits. This function intentionally
@@ -52,8 +53,9 @@ def replay_daily_strategy(connection, bars: Iterable[DayBar], trading_days: Sequ
             connection, config.account_id, trade_date, next_day, all_bars, exit_rule
         ))
         features = build_features(all_bars, trade_date, config.lookback_days)
-        if allowed_tickers is not None:
-            features = [row for row in features if row.ticker in allowed_tickers]
+        point_in_time_universe = universe_by_date.get(trade_date) if universe_by_date else allowed_tickers
+        if point_in_time_universe is not None:
+            features = [row for row in features if row.ticker in point_in_time_universe]
         blocked = _blocked_tickers(connection, config.account_id)
         recommendations = [row for row in select_baseline(
             features, BaselineConfig("historical_momentum_v1", config.volume_multiple, config.top_n)

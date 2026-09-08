@@ -7,7 +7,7 @@ name = "quant-audit-core"
 version = "0.1.0"
 description = "Auditable daily-frequency paper-trading core"
 requires-python = ">=3.9"
-dependencies = ["duckdb>=1.0.0", "pytz>=2024.1"]
+dependencies = ["duckdb>=1.0.0", "pytz>=2024.1", "streamlit>=1.39.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0.0"]
