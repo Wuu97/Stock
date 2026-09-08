@@ -23,6 +23,8 @@ class NewsDocument:
     ticker: Optional[str] = None
     external_id: Optional[str] = None
     source_url: Optional[str] = None
+    raw_artifact_path: Optional[str] = None
+    raw_artifact_sha256: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.scope not in {"STOCK", "INDUSTRY", "MACRO"} or not self.headline.strip() or not self.body.strip():
@@ -95,10 +97,10 @@ class NewsArchive:
         if existing:
             return existing[0]
         document_id = str(uuid4())
-        self.connection.execute("INSERT INTO news_documents VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
+        self.connection.execute("INSERT INTO news_documents (document_id, source_channel, external_id, scope, ticker, published_at, received_at, headline, body, source_url, content_sha256, raw_artifact_path, raw_artifact_sha256, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
             document_id, document.source_channel, document.external_id, document.scope, document.ticker,
             document.published_at, document.received_at, document.headline, document.body, document.source_url,
-            document.content_sha256, created_at,
+            document.content_sha256, document.raw_artifact_path, document.raw_artifact_sha256, created_at,
         ])
         return document_id
 
@@ -113,3 +115,13 @@ class NewsArchive:
             sha256(result_json.encode("utf-8")).hexdigest(), created_at,
         ])
         return assessment_id
+
+    def record_request(self, source_channel: str, request_key_sha256: str, requested_at: datetime,
+                       attempt_number: int, cache_hit: bool, http_status=None, backoff_seconds=0,
+                       raw_artifact_path=None, raw_artifact_sha256=None, error_code=None) -> str:
+        request_id = str(uuid4())
+        self.connection.execute("INSERT INTO external_request_audit VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
+            request_id, source_channel, request_key_sha256, requested_at, attempt_number, http_status,
+            cache_hit, backoff_seconds, raw_artifact_path, raw_artifact_sha256, error_code, requested_at,
+        ])
+        return request_id

@@ -287,8 +287,25 @@ CREATE TABLE IF NOT EXISTS news_documents (
     body TEXT NOT NULL,
     source_url VARCHAR,
     content_sha256 VARCHAR NOT NULL,
+    raw_artifact_path VARCHAR,
+    raw_artifact_sha256 VARCHAR,
     created_at TIMESTAMPTZ NOT NULL,
     UNIQUE (source_channel, content_sha256)
+);
+
+CREATE TABLE IF NOT EXISTS external_request_audit (
+    request_id VARCHAR PRIMARY KEY,
+    source_channel VARCHAR NOT NULL,
+    request_key_sha256 VARCHAR NOT NULL,
+    requested_at TIMESTAMPTZ NOT NULL,
+    attempt_number INTEGER NOT NULL CHECK (attempt_number > 0),
+    http_status INTEGER,
+    cache_hit BOOLEAN NOT NULL,
+    backoff_seconds DECIMAL(12,3) NOT NULL DEFAULT 0,
+    raw_artifact_path VARCHAR,
+    raw_artifact_sha256 VARCHAR,
+    error_code VARCHAR,
+    created_at TIMESTAMPTZ NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS news_assessments (

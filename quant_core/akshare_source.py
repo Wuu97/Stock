@@ -95,7 +95,11 @@ def cls_flash_news(received_at: datetime) -> tuple[NewsDocument, ...]:
 
 
 def _parse_news_time(value: object) -> datetime:
-    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    text = str(value)
+    if len(text) == 16 and text.endswith("Z") and text[8] == "T":
+        from datetime import timezone
+        return datetime.strptime(text, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
         from zoneinfo import ZoneInfo
         return parsed.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
