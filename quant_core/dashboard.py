@@ -34,7 +34,7 @@ def load_dashboard(connection, account_id: str) -> dict:
         [account_id],
     ).fetchall()
     nav = connection.execute(
-        "SELECT trade_date, total_equity, unit_nav, max_drawdown FROM sim_nav_daily "
+        "SELECT trade_date, cash_balance, securities_value, total_equity, unit_nav, max_drawdown FROM sim_nav_daily "
         "WHERE account_id = ? ORDER BY trade_date DESC LIMIT 60", [account_id]
     ).fetchall()
     recommendations = connection.execute(
@@ -44,6 +44,7 @@ def load_dashboard(connection, account_id: str) -> dict:
     ).fetchall()
     return {
         "account": {"id": account_id, "name": account[0], "initial_cash": _number(account[1])},
+        "summary": _summary(connection, account_id, nav),
         "positions": [
             {
                 "ticker": ticker, "shares": shares, "cost": _number(cost), "last_close": _number(close),
@@ -57,15 +58,26 @@ def load_dashboard(connection, account_id: str) -> dict:
             for ticker, trigger, target_date in pending
         ],
         "nav": [
-            {"date": str(day), "equity": _number(equity), "unit_nav": _number(unit_nav), "drawdown": _number(drawdown)}
-            for day, equity, unit_nav, drawdown in reversed(nav)
+            {"date": str(day), "cash": _number(cash), "market_value": _number(value), "equity": _number(equity), "unit_nav": _number(unit_nav), "drawdown": _number(drawdown)}
+            for day, cash, value, equity, unit_nav, drawdown in reversed(nav)
         ],
         "recommendations": [
-            {"target_date": str(day), "ticker": ticker, "rank": rank, "score": _number(score), "reference_close": _number(close)}
+            {"scope": "全局推荐", "target_date": str(day), "ticker": ticker, "rank": rank, "score": _number(score), "reference_close": _number(close)}
             for day, ticker, rank, score, close in recommendations
         ],
         "exit_rules": {"stop_loss": -0.10, "take_profit_gate": 0.15, "trailing_drawdown": 0.05, "max_holding_days": 60},
     }
+
+
+def _summary(connection, account_id, nav):
+    cash = connection.execute(
+        "SELECT COALESCE(SUM(debit_amount - credit_amount), 0) FROM ledger_journal_entries "
+        "WHERE account_id = ? AND account_code = '1001'", [account_id]
+    ).fetchone()[0]
+    if not nav:
+        return {"cash": _number(cash), "market_value": 0.0, "equity": _number(cash), "max_drawdown": 0.0}
+    _, _, market_value, equity, _, drawdown = nav[0]
+    return {"cash": _number(cash), "market_value": _number(market_value), "equity": _number(equity), "max_drawdown": _number(drawdown)}
 
 
 def load_activity(connection, account_id: str) -> dict:

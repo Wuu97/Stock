@@ -3,6 +3,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import duckdb
+import pytest
 
 from quant_core.backtest import BacktestConfig, replay_daily_strategy
 from quant_core.models import DayBar, FeeModel
@@ -27,3 +28,17 @@ def test_backtest_replays_next_open_orders_without_future_bars():
     )
     assert result["buy_orders_submitted"] == 1
     assert result["orders"]["BUY_FILLED"] == 1
+
+
+def test_backtest_fails_closed_when_point_in_time_universe_is_missing():
+    connection = duckdb.connect(":memory:")
+    connection.execute(Path("sql/schema.sql").read_text())
+    start = date(2026, 1, 2)
+    days = [start + timedelta(days=index) for index in range(22)]
+    bars = [DayBar(day, "600000.SH", Decimal("10"), Decimal("10"), Decimal("10"), Decimal("10"),
+                   100, Decimal("1000"), Decimal("11"), Decimal("9")) for day in days]
+    SettlementService(connection).create_account("backtest", "test", Decimal("10000"), start)
+    with pytest.raises(ValueError, match="point-in-time universe snapshot is missing"):
+        replay_daily_strategy(connection, bars, days, BacktestConfig("backtest", days[20], days[-1]),
+                              FeeModel("test", Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0")),
+                              ExitRule(), universe_by_date={days[20]: {"600000.SH"}})

@@ -38,6 +38,10 @@ def replay_daily_strategy(connection, bars: Iterable[DayBar], trading_days: Sequ
     calendar = tuple(day for day in sorted(set(trading_days)) if config.start_date <= day <= config.end_date)
     if len(calendar) < 2:
         raise ValueError("backtest range needs at least two trading days")
+    if universe_by_date is not None:
+        missing = [day.isoformat() for day in calendar if day not in universe_by_date]
+        if missing:
+            raise ValueError(f"point-in-time universe snapshot is missing for: {', '.join(missing[:5])}")
     by_day = {day: {bar.ticker: bar for bar in all_bars if bar.trade_date == day} for day in calendar}
     service = SettlementService(connection)
     buys_submitted = 0
@@ -53,7 +57,7 @@ def replay_daily_strategy(connection, bars: Iterable[DayBar], trading_days: Sequ
             connection, config.account_id, trade_date, next_day, all_bars, exit_rule
         ))
         features = build_features(all_bars, trade_date, config.lookback_days)
-        point_in_time_universe = universe_by_date.get(trade_date) if universe_by_date else allowed_tickers
+        point_in_time_universe = universe_by_date[trade_date] if universe_by_date is not None else allowed_tickers
         if point_in_time_universe is not None:
             features = [row for row in features if row.ticker in point_in_time_universe]
         blocked = _blocked_tickers(connection, config.account_id)

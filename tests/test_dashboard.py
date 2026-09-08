@@ -4,7 +4,7 @@ from pathlib import Path
 
 import duckdb
 
-from quant_core.dashboard import load_dashboard
+from quant_core.dashboard import load_activity, load_dashboard
 from quant_core.models import FeeModel, OrderIntent
 from quant_core.settlement import SettlementService
 from tests.test_risk import _bar
@@ -23,3 +23,16 @@ def test_dashboard_reads_account_and_position_without_mutating_state():
     assert data["account"]["name"] == "测试账户"
     assert data["positions"][0]["ticker"] == "600000.SH"
     assert data["positions"][0]["unrealized_return"] is None
+    assert data["summary"] == {"cash": 9000.0, "market_value": 0.0, "equity": 9000.0, "max_drawdown": 0.0}
+
+
+def test_activity_is_scoped_to_the_requested_account():
+    connection = duckdb.connect(":memory:")
+    connection.execute(Path("sql/schema.sql").read_text())
+    service = SettlementService(connection)
+    for account_id in ("a", "b"):
+        service.create_account(account_id, account_id, Decimal("1000"), date(2026, 1, 2))
+        service.create_intent(OrderIntent(f"{account_id}-buy", account_id, "600000.SH", date(2026, 1, 2), "BUY", 100))
+    activity = load_activity(connection, "a")
+    assert [row["ticker"] for row in activity["orders"]] == ["600000.SH"]
+    assert len(activity["orders"]) == 1

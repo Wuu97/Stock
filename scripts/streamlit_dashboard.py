@@ -32,13 +32,12 @@ def main() -> None:
         st.error(f"无法读取看板：{error}")
         return
 
-    nav = data["nav"][-1] if data["nav"] else None
-    cash = nav["equity"] - sum((row["last_close"] or 0) * row["shares"] for row in data["positions"]) if nav else None
+    summary = data["summary"]
     metrics = st.columns(4)
-    metrics[0].metric("总资产", "—" if not nav else f"¥{nav['equity']:,.2f}")
-    metrics[1].metric("现金", "—" if cash is None else f"¥{cash:,.2f}")
-    metrics[2].metric("持仓市值", f"¥{sum((row['last_close'] or 0) * row['shares'] for row in data['positions']):,.2f}")
-    metrics[3].metric("最大回撤", "—" if not nav else f"{nav['drawdown']:.2%}")
+    metrics[0].metric("总资产", f"¥{summary['equity']:,.2f}")
+    metrics[1].metric("现金", f"¥{summary['cash']:,.2f}")
+    metrics[2].metric("持仓市值", f"¥{summary['market_value']:,.2f}")
+    metrics[3].metric("最大回撤", f"{summary['max_drawdown']:.2%}")
     rejected = [row for row in activity["orders"] if row["status"] == "REJECTED"]
     if data["pending_exits"] or rejected:
         st.warning("需要关注：" + "；".join(
@@ -46,12 +45,15 @@ def main() -> None:
             [f"{row['ticker']} {row['reason']}" for row in rejected[:5]]
         ))
     overview, nav_tab, positions, recommendations, risk, activity_tab = st.tabs(
-        ["Overview", "NAV", "Positions", "Recommendations", "Risk", "Activity"]
+        ["总览", "净值", "持仓", "推荐", "风控", "活动记录"]
     )
     with overview:
         st.json(data["exit_rules"], expanded=False)
     with nav_tab:
-        st.line_chart({"NAV": [row["unit_nav"] for row in data["nav"]], "Drawdown": [row["drawdown"] for row in data["nav"]]})
+        st.subheader("净值")
+        st.line_chart({"NAV": [row["unit_nav"] for row in data["nav"]]})
+        st.subheader("回撤")
+        st.line_chart({"Drawdown": [row["drawdown"] for row in data["nav"]]})
         st.dataframe(data["nav"], use_container_width=True)
     with positions:
         st.dataframe(data["positions"], use_container_width=True)
@@ -61,11 +63,11 @@ def main() -> None:
         st.dataframe(data["pending_exits"], use_container_width=True)
         st.caption("止损 10% · 盈利 15% 后从最高收盘价回撤 5% · 最长持有 60 个交易日")
     with activity_tab:
-        st.subheader("Orders")
+        st.subheader("订单")
         st.dataframe(activity["orders"], use_container_width=True)
-        st.subheader("Executions")
+        st.subheader("成交")
         st.dataframe(activity["executions"], use_container_width=True)
-        st.subheader("Reject Reasons")
+        st.subheader("拒单原因")
         st.dataframe(activity["reject_reasons"], use_container_width=True)
 
 
