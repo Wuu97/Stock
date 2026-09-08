@@ -1,0 +1,10 @@
+{
+  "groups": [
+    {
+      "name": "large_cap_momentum",
+      "min_total_market_cap": "80000000000",
+      "momentum_window_days": 30,
+      "top_n": 50
+    }
+  ]
+}

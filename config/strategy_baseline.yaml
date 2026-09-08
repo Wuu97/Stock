@@ -1,0 +1,5 @@
+strategy:
+  id: momentum_trend_v1
+  lookback_days: 20
+  volume_multiple: 1.5
+  top_n: 5

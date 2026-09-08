@@ -1,0 +1,5 @@
+universe:
+  id: a_share_ex_st_v1
+  include_prefixes: ["000", "001", "002", "003", "300", "301", "600", "601", "603", "605", "688", "689"]
+  exclude_st: true
+  min_listing_days: 60

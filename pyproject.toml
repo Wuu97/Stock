@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quant-audit-core"
+version = "0.1.0"
+description = "Auditable daily-frequency paper-trading core"
+requires-python = ">=3.9"
+dependencies = ["duckdb>=1.0.0", "pytz>=2024.1"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0"]
+data = ["baostock>=0.8.9", "akshare>=1.18.0", "tushare>=1.4.24"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

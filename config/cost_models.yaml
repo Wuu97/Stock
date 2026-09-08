@@ -1,0 +1,7 @@
+cost_models:
+  cost_a_share_2026_v1:
+    commission_rate: 0.00025
+    min_commission: 5.00
+    stamp_duty_rate: 0.00050
+    transfer_fee_rate: 0.00001
+    default_slippage_rate: 0.001
