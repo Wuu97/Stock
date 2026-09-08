@@ -34,12 +34,15 @@ def main() -> None:
     parser.add_argument("--start-date", required=True)
     parser.add_argument("--end-date", required=True)
     parser.add_argument("--adjusted-csv", required=True, help="Raw supplier export with trade_date,ticker,adj_close")
+    parser.add_argument("--benchmark-adjusted-csv", help="Optional separately archived benchmark adjusted-close CSV")
     parser.add_argument("--benchmark", default="000300.SH")
     parser.add_argument("--output", required=True, help="Parquet output path")
     args = parser.parse_args()
 
     adjusted_path = Path(args.adjusted_csv)
     adjusted = _read_adjusted_closes(adjusted_path)
+    benchmark_path = Path(args.benchmark_adjusted_csv) if args.benchmark_adjusted_csv else adjusted_path
+    benchmark_adjusted = _read_adjusted_closes(benchmark_path)
     connection = duckdb.connect(args.db, read_only=True)
     try:
         snapshot_ids = args.market_snapshot_id
@@ -65,7 +68,7 @@ def main() -> None:
     universe_by_date: dict[date, set[str]] = {}
     for trade_date, ticker in universe_rows:
         universe_by_date.setdefault(trade_date, set()).add(ticker)
-    benchmark = {day: close for (day, ticker), close in adjusted.items() if ticker == args.benchmark}
+    benchmark = {day: close for (day, ticker), close in benchmark_adjusted.items() if ticker == args.benchmark}
     calendar = sorted({bar.trade_date for bar in bars if bar.ticker == args.benchmark} | set(benchmark))
     if not calendar:
         raise ValueError("benchmark calendar is missing")
@@ -90,6 +93,7 @@ def main() -> None:
         "rows": len(rows), "date_range": [args.start_date, args.end_date],
         "feature_columns": list(rows[0].as_dict().keys())[2:-1],
         "adjusted_csv_sha256": sha256(adjusted_path.read_bytes()).hexdigest(),
+        "benchmark_adjusted_csv_sha256": sha256(benchmark_path.read_bytes()).hexdigest(),
         "input_market_manifests": dict(manifests), "dataset_sha256": sha256(output.read_bytes()).hexdigest(),
     }
     manifest["manifest_sha256"] = canonical_hash(manifest)
