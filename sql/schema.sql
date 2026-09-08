@@ -319,3 +319,59 @@ CREATE TABLE IF NOT EXISTS news_assessments (
     result_sha256 VARCHAR NOT NULL,
     created_at TIMESTAMPTZ NOT NULL
 );
+
+-- Versioned reference data. News hypotheses may only reference codes in this table.
+CREATE TABLE IF NOT EXISTS sw_industry_taxonomy (
+    taxonomy_version VARCHAR NOT NULL,
+    industry_code VARCHAR NOT NULL,
+    industry_name VARCHAR NOT NULL,
+    industry_level INTEGER NOT NULL CHECK (industry_level > 0),
+    PRIMARY KEY (taxonomy_version, industry_code)
+);
+
+CREATE TABLE IF NOT EXISTS security_industry_memberships (
+    taxonomy_version VARCHAR NOT NULL,
+    ticker VARCHAR NOT NULL,
+    industry_code VARCHAR NOT NULL,
+    valid_from DATE NOT NULL,
+    valid_to DATE,
+    PRIMARY KEY (taxonomy_version, ticker, valid_from),
+    FOREIGN KEY (taxonomy_version, industry_code) REFERENCES sw_industry_taxonomy(taxonomy_version, industry_code)
+);
+
+CREATE TABLE IF NOT EXISTS macro_event_hypotheses (
+    hypothesis_id VARCHAR PRIMARY KEY,
+    effective_as_of_timestamp TIMESTAMPTZ NOT NULL,
+    evidence_quality VARCHAR NOT NULL CHECK (evidence_quality IN ('AUTHORITATIVE_OFFICIAL', 'MULTI_INDEPENDENT_SOURCE', 'UNVERIFIED_SINGLE_SOURCE')),
+    evidence_domain_count INTEGER NOT NULL CHECK (evidence_domain_count > 0),
+    status VARCHAR NOT NULL CHECK (status IN ('SHADOW_ELIGIBLE', 'REJECTED')),
+    rejection_reason VARCHAR,
+    result_json VARCHAR NOT NULL,
+    result_sha256 VARCHAR NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS macro_event_evidence (
+    hypothesis_id VARCHAR NOT NULL REFERENCES macro_event_hypotheses(hypothesis_id),
+    document_id VARCHAR NOT NULL REFERENCES news_documents(document_id),
+    PRIMARY KEY (hypothesis_id, document_id)
+);
+
+CREATE TABLE IF NOT EXISTS macro_event_impacts (
+    hypothesis_id VARCHAR NOT NULL REFERENCES macro_event_hypotheses(hypothesis_id),
+    taxonomy_version VARCHAR NOT NULL,
+    industry_code VARCHAR NOT NULL,
+    impact_direction VARCHAR NOT NULL CHECK (impact_direction IN ('POSITIVE', 'NEGATIVE')),
+    event_score DECIMAL(20,8) NOT NULL CHECK (event_score >= -0.35 AND event_score <= 0.35),
+    expected_duration_days INTEGER NOT NULL CHECK (expected_duration_days > 0),
+    uncertainty_text TEXT NOT NULL,
+    PRIMARY KEY (hypothesis_id, industry_code),
+    FOREIGN KEY (taxonomy_version, industry_code) REFERENCES sw_industry_taxonomy(taxonomy_version, industry_code)
+);
+
+-- Shadow runs are never eligible for production settlement.
+CREATE TABLE IF NOT EXISTS recommendation_run_modes (
+    run_id VARCHAR PRIMARY KEY REFERENCES recommendation_runs(run_id),
+    execution_mode VARCHAR NOT NULL CHECK (execution_mode IN ('PRODUCTION', 'SHADOW')),
+    created_at TIMESTAMPTZ NOT NULL
+);

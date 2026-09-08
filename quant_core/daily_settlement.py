@@ -31,7 +31,9 @@ def settle_frozen_buys(connection, account_id: str, market_snapshot_id: str, tra
     rows = connection.execute(
         "SELECT i.item_id, i.ticker FROM recommendation_items i "
         "JOIN recommendation_runs r ON r.run_id = i.run_id "
-        "WHERE r.target_trade_date = ? AND r.run_status = 'FROZEN' ORDER BY i.rank_order",
+        "LEFT JOIN recommendation_run_modes m ON m.run_id = r.run_id "
+        "WHERE r.target_trade_date = ? AND r.run_status = 'FROZEN' "
+        "AND COALESCE(m.execution_mode, 'PRODUCTION') = 'PRODUCTION' ORDER BY i.rank_order",
         [trade_date],
     ).fetchall()
     bars = _bars_for_trade_date(connection, market_snapshot_id, trade_date)

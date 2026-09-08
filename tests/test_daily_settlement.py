@@ -33,3 +33,18 @@ def test_daily_settlement_fills_frozen_recommendation_once_and_values_account():
     assert con.execute("SELECT total_equity FROM sim_nav_daily").fetchone()[0] == Decimal("10015.0000")
     repeated = settle_frozen_buys(con, "acct", "market", date(2024, 3, 4), date(2024, 3, 5), 100, FEE)
     assert repeated[0].status == "SKIPPED"
+
+
+def test_daily_settlement_never_executes_a_shadow_recommendation_run():
+    con = duckdb.connect(":memory:")
+    con.execute(Path("sql/schema.sql").read_text())
+    now = datetime.now(timezone.utc)
+    con.execute("INSERT INTO market_data_snapshots VALUES ('market', ?, 'fixture', ?, ?, 'path', 'hash', ?)", [date(2024, 3, 4), now, now, now])
+    MarketDataStore(con).store_bars("market", [_bar(date(2024, 3, 4), "600000.SH")])
+    con.execute("INSERT INTO feature_snapshots VALUES ('feature', ?, 20, 'hash', 'path', 'hash', ?, ?)", [date(2024, 3, 1), now, now])
+    con.execute("INSERT INTO recommendation_runs VALUES ('shadow', ?, 's', 'v', 'c', 'feature', ?, 'FROZEN', NULL, ?)", [date(2024, 3, 4), now, now])
+    con.execute("INSERT INTO recommendation_run_modes VALUES ('shadow', 'SHADOW', ?)", [now])
+    con.execute("INSERT INTO recommendation_items VALUES ('shadow-item', 'shadow', '600000.SH', 1, 1, 10, '{}', ?)", [now])
+    SettlementService(con).create_account("acct", "test", Decimal("10000"), date(2024, 3, 1))
+    outcomes = settle_frozen_buys(con, "acct", "market", date(2024, 3, 4), date(2024, 3, 5), 100, FEE)
+    assert outcomes == ()
