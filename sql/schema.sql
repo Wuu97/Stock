@@ -198,6 +198,46 @@ CREATE TABLE IF NOT EXISTS sim_lot_disposal_events (
     created_at TIMESTAMPTZ NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS sim_corporate_action_events (
+    action_id VARCHAR PRIMARY KEY,
+    ticker VARCHAR NOT NULL,
+    action_type VARCHAR NOT NULL CHECK (action_type IN ('CASH_DIVIDEND', 'STOCK_ADJUSTMENT')),
+    record_date DATE,
+    ex_date DATE,
+    payment_date DATE,
+    cash_per_share DECIMAL(20,8) NOT NULL DEFAULT 0,
+    share_ratio DECIMAL(20,8) NOT NULL DEFAULT 0,
+    fractional_cash_price DECIMAL(20,4),
+    tax_assumption_version VARCHAR NOT NULL,
+    source_payload_json VARCHAR NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sim_dividend_entitlements (
+    entitlement_id VARCHAR PRIMARY KEY,
+    action_id VARCHAR NOT NULL REFERENCES sim_corporate_action_events(action_id),
+    account_id VARCHAR NOT NULL REFERENCES sim_accounts(account_id),
+    eligible_shares BIGINT NOT NULL CHECK (eligible_shares > 0),
+    gross_cash DECIMAL(20,4) NOT NULL CHECK (gross_cash > 0),
+    paid_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL,
+    UNIQUE (action_id, account_id)
+);
+
+CREATE TABLE IF NOT EXISTS sim_lot_adjustment_events (
+    adjustment_id VARCHAR PRIMARY KEY,
+    action_id VARCHAR NOT NULL REFERENCES sim_corporate_action_events(action_id),
+    lot_id VARCHAR NOT NULL REFERENCES sim_position_lots(lot_id),
+    effective_date DATE NOT NULL,
+    pre_shares BIGINT NOT NULL CHECK (pre_shares > 0),
+    post_shares BIGINT NOT NULL CHECK (post_shares >= 0),
+    pre_unit_cost DECIMAL(20,4) NOT NULL,
+    post_unit_cost DECIMAL(20,4) NOT NULL,
+    fractional_cash_payout DECIMAL(20,4) NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL,
+    UNIQUE (action_id, lot_id)
+);
+
 CREATE TABLE IF NOT EXISTS sim_positions_daily (
     account_id VARCHAR NOT NULL REFERENCES sim_accounts(account_id),
     trade_date DATE NOT NULL,

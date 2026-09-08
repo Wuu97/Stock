@@ -72,6 +72,24 @@ def sell_entries(gross: Decimal, cost_relieved: Decimal, commission: Decimal,
     return validate_entries(entries)
 
 
+def dividend_entries(gross_cash: Decimal, ticker: str) -> List[JournalEntry]:
+    gross_cash = money(gross_cash)
+    return validate_entries([
+        JournalEntry("1001", gross_cash, ZERO, "pretax cash dividend", ticker),
+        JournalEntry("5002", ZERO, gross_cash, "dividend income", ticker),
+    ])
+
+
+def fractional_settlement_entries(cash: Decimal, cost: Decimal, ticker: str) -> List[JournalEntry]:
+    cash, cost = money(cash), money(cost)
+    pnl = cash - cost
+    entries = [JournalEntry("1001", cash, ZERO, "fractional share cash settlement", ticker),
+               JournalEntry("1101", ZERO, cost, "relieve fractional share cost", ticker)]
+    entries.append(JournalEntry("5001", ZERO, pnl, "fractional share gain", ticker) if pnl >= ZERO
+                   else JournalEntry("5001", -pnl, ZERO, "fractional share loss", ticker))
+    return validate_entries(entries)
+
+
 def journal_rows(journal_id: str, account_id: str, trade_date: date,
                  entries: Iterable[JournalEntry], now, event_id=None) -> list:
     return [
