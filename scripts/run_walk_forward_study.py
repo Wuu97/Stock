@@ -63,11 +63,13 @@ def main() -> None:
     if args.train_window_days < 1 or args.test_window_days < 1 or args.top_n < 1:
         raise ValueError("study windows and top-n must be positive")
     try:
-        from lightgbm import LGBMRegressor
+        from lightgbm import Dataset, train as lgb_train
+        import numpy as np
     except ImportError as exc:
         raise RuntimeError("install the ML extra before running: python -m pip install -e '.[ml]'") from exc
 
     frame = _load_rows(args.dataset)
+    frame = [row for row in frame if row["label_status"] == "MATURE"]
     dates = sorted({row["trade_date"] for row in frame})
     periods, daily = [], []
     for start in range(args.train_window_days, len(dates), args.test_window_days):
@@ -76,13 +78,15 @@ def main() -> None:
         if not test_dates:
             break
         train_dates = dates[train_start:start]
-        train = [row for row in frame if row["trade_date"] in train_dates]
+        train_rows = [row for row in frame if row["trade_date"] in train_dates]
         test = [dict(row) for row in frame if row["trade_date"] in test_dates]
-        model = LGBMRegressor(objective="regression", n_estimators=200, learning_rate=0.03,
-                              num_leaves=15, min_child_samples=30, random_state=7, verbosity=-1)
-        model.fit([[row[column] for column in FEATURE_COLUMNS] for row in train],
-                  [row["target_excess_ret_5d"] for row in train])
-        predictions = model.predict([[row[column] for column in FEATURE_COLUMNS] for row in test])
+        model_params = {"objective": "regression", "learning_rate": 0.03, "num_leaves": 15,
+                        "min_data_in_leaf": 30, "seed": 7, "verbosity": -1}
+        train_matrix = np.asarray([[row[column] for column in FEATURE_COLUMNS] for row in train_rows], dtype=float)
+        test_matrix = np.asarray([[row[column] for column in FEATURE_COLUMNS] for row in test], dtype=float)
+        model = lgb_train(model_params, Dataset(train_matrix, label=[row["target_excess_ret_5d"] for row in train_rows]),
+                          num_boost_round=200)
+        predictions = model.predict(test_matrix)
         for row, prediction in zip(test, predictions):
             row["prediction"] = float(prediction)
         period_ics = []
@@ -99,9 +103,9 @@ def main() -> None:
             if ic is not None:
                 period_ics.append(ic)
         periods.append({"train_dates": [str(train_dates[0]), str(train_dates[-1])],
-                        "test_dates": [str(test_dates[0]), str(test_dates[-1])], "training_rows": len(train),
+                        "test_dates": [str(test_dates[0]), str(test_dates[-1])], "training_rows": len(train_rows),
                         "rank_ic_mean": sum(period_ics) / len(period_ics) if period_ics else None,
-                        "model_params": model.get_params()})
+                        "model_params": model_params | {"num_boost_round": 200}})
     if not periods:
         raise ValueError("dataset does not contain enough dates for one walk-forward period")
     valid_ics = [row["rank_ic"] for row in daily if row["rank_ic"] is not None]

@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from datetime import date
 from decimal import Decimal
 from math import sqrt
-from typing import Iterable, Mapping, Sequence
+from typing import Iterable, Mapping, Optional, Sequence
 
 from .models import DayBar
 
@@ -28,7 +28,8 @@ class DatasetRow:
     volume_ratio_20d: float
     momentum_20d_percentile: float
     momentum_20d_zscore: float
-    target_excess_ret_5d: float
+    target_excess_ret_5d: Optional[float]
+    label_status: str
 
     def as_dict(self) -> dict:
         return asdict(self) | {"trade_date": self.trade_date.isoformat()}
@@ -85,8 +86,8 @@ def build_cross_sectional_dataset(
                 raise SnapshotMissingError(f"raw feature bar is missing for {ticker} on {trade_date.isoformat()}")
             adjusted_start = adjusted_closes.get((trade_date, ticker))
             adjusted_end = adjusted_closes.get((future_date, ticker))
-            if adjusted_start is None or adjusted_end is None:
-                raise SnapshotMissingError(f"adjusted close is missing for {ticker} on {trade_date.isoformat()} or {future_date.isoformat()}")
+            if adjusted_start is None:
+                raise SnapshotMissingError(f"adjusted close is missing for {ticker} on {trade_date.isoformat()}")
             closes = [bar.close for bar in window]
             volumes = [bar.volume for bar in window]
             average_volume = Decimal(sum(volumes)) / len(volumes)
@@ -97,7 +98,8 @@ def build_cross_sectional_dataset(
                 "momentum_20d": float((closes[-1] / closes[0]) - Decimal("1")),
                 "sma20_deviation": float((closes[-1] / (sum(closes) / len(closes))) - Decimal("1")),
                 "volume_ratio_20d": float(Decimal(volumes[-1]) / average_volume) if average_volume else 0.0,
-                "target_excess_ret_5d": float(((adjusted_end / adjusted_start) - Decimal("1")) - benchmark_return),
+                "target_excess_ret_5d": float(((adjusted_end / adjusted_start) - Decimal("1")) - benchmark_return) if adjusted_end else None,
+                "label_status": "MATURE" if adjusted_end else "UNTRADEABLE_OUTCOME",
             })
         percentile, zscore = _cross_section_statistics([row["momentum_20d"] for row in raw_rows])
         rows.extend(DatasetRow(trade_date=trade_date, momentum_20d_percentile=percentile[index],

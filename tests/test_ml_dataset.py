@@ -51,6 +51,14 @@ def test_dataset_fails_closed_for_missing_benchmark_observation():
         build_cross_sectional_dataset(bars, calendar, universe, adjusted, benchmark, calendar[0], calendar[-1])
 
 
+def test_missing_future_stock_price_is_retained_as_an_untradeable_outcome():
+    calendar, bars, adjusted, benchmark, universe = _inputs()
+    del adjusted[(calendar[24], "000001.SZ")]
+    row = build_cross_sectional_dataset(bars, calendar, universe, adjusted, benchmark, calendar[0], calendar[-1])[0]
+    assert row.target_excess_ret_5d is None
+    assert row.label_status == "UNTRADEABLE_OUTCOME"
+
+
 def test_cross_section_features_do_not_depend_on_future_prices():
     calendar, bars, adjusted, benchmark, universe = _inputs(30)
     baseline = build_cross_sectional_dataset(bars, calendar, universe, adjusted, benchmark, calendar[0], calendar[-1])

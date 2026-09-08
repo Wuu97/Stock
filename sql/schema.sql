@@ -274,3 +274,31 @@ CREATE TABLE IF NOT EXISTS performance_evaluations (
     created_at TIMESTAMPTZ NOT NULL,
     UNIQUE (recommendation_item_id, evaluation_version)
 );
+
+CREATE TABLE IF NOT EXISTS news_documents (
+    document_id VARCHAR PRIMARY KEY,
+    source_channel VARCHAR NOT NULL,
+    external_id VARCHAR,
+    scope VARCHAR NOT NULL CHECK (scope IN ('STOCK', 'INDUSTRY', 'MACRO')),
+    ticker VARCHAR,
+    published_at TIMESTAMPTZ NOT NULL,
+    received_at TIMESTAMPTZ NOT NULL,
+    headline VARCHAR NOT NULL,
+    body TEXT NOT NULL,
+    source_url VARCHAR,
+    content_sha256 VARCHAR NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    UNIQUE (source_channel, content_sha256)
+);
+
+CREATE TABLE IF NOT EXISTS news_assessments (
+    assessment_id VARCHAR PRIMARY KEY,
+    document_id VARCHAR NOT NULL REFERENCES news_documents(document_id),
+    task_type VARCHAR NOT NULL CHECK (task_type IN ('MACRO_EVENT_MAPPING', 'RISK_VETO')),
+    provider_name VARCHAR NOT NULL,
+    model_name VARCHAR NOT NULL,
+    prompt_version VARCHAR NOT NULL,
+    result_json VARCHAR NOT NULL,
+    result_sha256 VARCHAR NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+);

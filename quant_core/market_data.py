@@ -83,3 +83,21 @@ class MarketDataStore:
             for bar in self.load_bars(snapshot_id):
                 combined[(bar.trade_date, bar.ticker)] = bar
         return [combined[key] for key in sorted(combined)]
+
+    def load_bars_many_for_tickers(self, snapshot_ids: Iterable[str], tickers: Iterable[str]) -> List[DayBar]:
+        """Read only a known PIT universe, avoiding an unnecessary full-market load."""
+        snapshot_ids, tickers = list(snapshot_ids), list(tickers)
+        if not snapshot_ids or not tickers:
+            return []
+        combined = {}
+        ticker_placeholders = ",".join("?" for _ in tickers)
+        for snapshot_id in snapshot_ids:
+            rows = self.connection.execute(
+                "SELECT trade_date, ticker, open, high, low, close, volume, amount, limit_up, limit_down, status "
+                "FROM daily_bars WHERE market_snapshot_id = ? AND ticker IN (" + ticker_placeholders + ") "
+                "ORDER BY trade_date, ticker", [snapshot_id, *tickers],
+            ).fetchall()
+            for row in rows:
+                bar = DayBar(*row)
+                combined[(bar.trade_date, bar.ticker)] = bar
+        return [combined[key] for key in sorted(combined)]
