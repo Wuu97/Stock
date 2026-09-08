@@ -27,7 +27,9 @@ def _read_adjusted_closes(path: Path) -> dict[tuple[date, str], Decimal]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--db", required=True)
-    parser.add_argument("--market-snapshot-id", required=True, action="append")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--market-snapshot-id", action="append")
+    source.add_argument("--market-snapshot-prefix", help="Load every immutable snapshot whose ID starts with this prefix")
     parser.add_argument("--group-name", required=True)
     parser.add_argument("--start-date", required=True)
     parser.add_argument("--end-date", required=True)
@@ -40,7 +42,15 @@ def main() -> None:
     adjusted = _read_adjusted_closes(adjusted_path)
     connection = duckdb.connect(args.db, read_only=True)
     try:
-        bars = MarketDataStore(connection).load_bars_many(args.market_snapshot_id)
+        snapshot_ids = args.market_snapshot_id
+        if args.market_snapshot_prefix:
+            snapshot_ids = [row[0] for row in connection.execute(
+                "SELECT market_snapshot_id FROM market_data_snapshots WHERE market_snapshot_id LIKE ? ORDER BY trade_date",
+                [args.market_snapshot_prefix + "%"],
+            ).fetchall()]
+        if not snapshot_ids:
+            raise ValueError("no market snapshots match the requested source")
+        bars = MarketDataStore(connection).load_bars_many(snapshot_ids)
         universe_rows = connection.execute(
             "SELECT u.as_of_trade_date, m.ticker FROM universe_snapshots u JOIN universe_members m "
             "ON m.universe_snapshot_id = u.universe_snapshot_id WHERE u.group_name = ? AND u.as_of_trade_date BETWEEN ? AND ?",
@@ -48,7 +58,7 @@ def main() -> None:
         ).fetchall()
         manifests = connection.execute(
             "SELECT market_snapshot_id, manifest_sha256 FROM market_data_snapshots WHERE market_snapshot_id IN ("
-            + ",".join("?" for _ in args.market_snapshot_id) + ")", args.market_snapshot_id,
+            + ",".join("?" for _ in snapshot_ids) + ")", snapshot_ids,
         ).fetchall()
     finally:
         connection.close()
