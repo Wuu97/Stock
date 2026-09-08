@@ -34,7 +34,7 @@ def test_backtest_fails_closed_when_point_in_time_universe_is_missing():
     connection = duckdb.connect(":memory:")
     connection.execute(Path("sql/schema.sql").read_text())
     start = date(2026, 1, 2)
-    days = [start + timedelta(days=index) for index in range(22)]
+    days = [start + timedelta(days=index) for index in range(23)]
     bars = [DayBar(day, "600000.SH", Decimal("10"), Decimal("10"), Decimal("10"), Decimal("10"),
                    100, Decimal("1000"), Decimal("11"), Decimal("9")) for day in days]
     SettlementService(connection).create_account("backtest", "test", Decimal("10000"), start)
@@ -42,3 +42,20 @@ def test_backtest_fails_closed_when_point_in_time_universe_is_missing():
         replay_daily_strategy(connection, bars, days, BacktestConfig("backtest", days[20], days[-1]),
                               FeeModel("test", Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0")),
                               ExitRule(), universe_by_date={days[20]: {"600000.SH"}})
+
+
+def test_backtest_allows_missing_universe_for_final_valuation_day():
+    connection = duckdb.connect(":memory:")
+    connection.execute(Path("sql/schema.sql").read_text())
+    start = date(2026, 1, 2)
+    days = [start + timedelta(days=index) for index in range(23)]
+    bars = [DayBar(day, "600000.SH", Decimal("10"), Decimal("10"), Decimal("10"), Decimal("10"),
+                   100, Decimal("1000"), Decimal("11"), Decimal("9")) for day in days]
+    SettlementService(connection).create_account("backtest", "test", Decimal("10000"), start)
+    decision_days = days[20:-1]
+    result = replay_daily_strategy(
+        connection, bars, days, BacktestConfig("backtest", days[20], days[-1]),
+        FeeModel("test", Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0")),
+        ExitRule(), universe_by_date={day: {"600000.SH"} for day in decision_days},
+    )
+    assert result["buy_orders_submitted"] >= 0

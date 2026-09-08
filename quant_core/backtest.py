@@ -39,7 +39,7 @@ def replay_daily_strategy(connection, bars: Iterable[DayBar], trading_days: Sequ
     if len(calendar) < 2:
         raise ValueError("backtest range needs at least two trading days")
     if universe_by_date is not None:
-        missing = [day.isoformat() for day in calendar if day not in universe_by_date]
+        missing = [day.isoformat() for day in calendar[:-1] if day not in universe_by_date]
         if missing:
             raise ValueError(f"point-in-time universe snapshot is missing for: {', '.join(missing[:5])}")
     by_day = {day: {bar.ticker: bar for bar in all_bars if bar.trade_date == day} for day in calendar}
