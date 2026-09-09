@@ -11,7 +11,7 @@ from .features import build_features
 from .models import DayBar, FeeModel, OrderIntent
 from .risk import ExitRule
 from .settlement import SettlementService
-from .strategy import BaselineConfig, select_baseline
+from .strategy_research import ScoreProvider, StrategySpec, baseline_strategy_spec, resolve_score_provider
 
 
 @dataclass(frozen=True)
@@ -23,12 +23,14 @@ class BacktestConfig:
     lookback_days: int = 20
     top_n: int = 5
     volume_multiple: Decimal = Decimal("1.0")
+    strategy_spec: Optional[StrategySpec] = None
 
 
 def replay_daily_strategy(connection, bars: Iterable[DayBar], trading_days: Sequence[date],
                           config: BacktestConfig, fee: FeeModel, exit_rule: ExitRule,
                           allowed_tickers: Optional[Set[str]] = None,
-                          universe_by_date: Optional[Mapping[date, Set[str]]] = None) -> dict:
+                          universe_by_date: Optional[Mapping[date, Set[str]]] = None,
+                          score_provider: Optional[ScoreProvider] = None) -> dict:
     """Replay decisions at each close and execute them at the following open.
 
     `bars` must already contain provider-supplied limits. This function intentionally
@@ -44,6 +46,10 @@ def replay_daily_strategy(connection, bars: Iterable[DayBar], trading_days: Sequ
             raise ValueError(f"point-in-time universe snapshot is missing for: {', '.join(missing[:5])}")
     by_day = {day: {bar.ticker: bar for bar in all_bars if bar.trade_date == day} for day in calendar}
     service = SettlementService(connection)
+    spec = config.strategy_spec or baseline_strategy_spec(config.volume_multiple, config.top_n)
+    provider = score_provider or resolve_score_provider(spec)
+    if provider.spec != spec:
+        raise ValueError("score provider spec does not match backtest config")
     buys_submitted = 0
     exits_signalled = 0
     for index, trade_date in enumerate(calendar):
@@ -61,9 +67,10 @@ def replay_daily_strategy(connection, bars: Iterable[DayBar], trading_days: Sequ
         if point_in_time_universe is not None:
             features = [row for row in features if row.ticker in point_in_time_universe]
         blocked = _blocked_tickers(connection, config.account_id)
-        recommendations = [row for row in select_baseline(
-            features, BaselineConfig("historical_momentum_v1", config.volume_multiple, config.top_n)
-        ) if row.ticker not in blocked]
+        scored = provider.score(features, trade_date)
+        if scored.spec != spec or scored.as_of_trade_date != trade_date:
+            raise ValueError("score provider returned an invalid strategy result")
+        recommendations = [row for row in scored.recommendations if row.ticker not in blocked]
         for recommendation in recommendations:
             service.create_intent(OrderIntent(
                 str(uuid4()), config.account_id, recommendation.ticker, next_day, "BUY", config.shares_per_order
