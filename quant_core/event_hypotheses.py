@@ -83,7 +83,7 @@ def evidence_quality(evidence: Iterable[EvidenceFact], effective_as_of: datetime
         raise ValueError("macro hypothesis requires evidence")
     if effective_as_of.tzinfo is None:
         raise ValueError("effective_as_of_timestamp must include a timezone")
-    official = {domain.lower() for domain in official_domains}
+    official = {_configured_domain(domain) for domain in official_domains}
     domains = set()
     for fact in facts:
         if fact.published_at.tzinfo is None or fact.received_at.tzinfo is None:
@@ -95,6 +95,11 @@ def evidence_quality(evidence: Iterable[EvidenceFact], effective_as_of: datetime
         if domain in official:
             return QUALITY_OFFICIAL, facts
     return (QUALITY_MULTI if len(domains) >= 2 else QUALITY_SINGLE), facts
+
+
+def _configured_domain(value: str) -> str:
+    """Normalize configured roots and subdomains the same way as evidence URLs."""
+    return normalized_domain(value if "://" in value else f"https://{value}")
 
 
 def persist_hypothesis(connection, payload: Mapping[str, Any], evidence: Iterable[EvidenceFact], effective_as_of: datetime,

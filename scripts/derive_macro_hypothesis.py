@@ -13,12 +13,13 @@ from quant_core.event_hypotheses import EvidenceFact, persist_hypothesis
 from quant_core.news import NewsArchive
 
 
-PROMPT_VERSION = "macro_event_shadow_v1"
+PROMPT_VERSION = "macro_event_shadow_v2"
 PROMPT = """You are a cautious macro-event analyst. Use only the supplied evidence.
 Return JSON only. If there is no material, cross-asset or industry event, return {"no_event":true}.
 Otherwise return exactly:
 {"event_category":"string","industry_impacts":[{"sw_industry_code":"string","impact_direction":"POSITIVE|NEGATIVE","event_score":number,"expected_duration_days":integer,"uncertainty_and_counter_arguments":"string"}]}
-Do not invent industry codes, evidence, policy facts, prices, or certainty. Scores must be between -0.35 and 0.35.
+Each sw_industry_code must be copied exactly from allowed_industries. If no listed industry is defensibly affected,
+return {"no_event":true}. Do not invent evidence, policy facts, prices, or certainty. Scores must be between -0.35 and 0.35.
 """
 
 
@@ -32,7 +33,7 @@ def main() -> None:
     parser.add_argument("--taxonomy-version", required=True)
     parser.add_argument("--official-domain", action="append", default=[])
     args = parser.parse_args()
-    effective_as_of = datetime.fromisoformat(args.effective_as_of)
+    effective_as_of = _parse_timestamp(args.effective_as_of)
     if effective_as_of.tzinfo is None:
         raise ValueError("--effective-as-of must include a timezone")
     if args.latest_hours is not None and args.latest_hours <= 0:
@@ -47,8 +48,12 @@ def main() -> None:
                          for document_id, _, _, published_at, received_at, source_url in rows)
         content = [{"document_id": document_id, "headline": headline, "body": body[:4000], "source_url": source_url}
                    for document_id, headline, body, _, _, source_url in rows]
+        industries = _load_industries(connection, args.taxonomy_version)
+        if not industries:
+            raise ValueError("configured taxonomy version contains no industries")
         provider = DeepSeekProvider()
-        result = provider.json_completion(PROMPT, json.dumps({"effective_as_of": effective_as_of.isoformat(), "evidence": content}, ensure_ascii=False))
+        result = provider.json_completion(PROMPT, json.dumps({"effective_as_of": effective_as_of.isoformat(),
+                                                               "allowed_industries": industries, "evidence": content}, ensure_ascii=False))
         archive = NewsArchive(connection)
         now = datetime.now(timezone.utc)
         for document_id, *_ in rows:
@@ -80,6 +85,21 @@ def _load_evidence(connection, document_ids, latest_hours, effective_as_of):
             "AND received_at BETWEEN ? AND ? ORDER BY received_at DESC LIMIT 20", [cutoff, effective_as_of]
         ).fetchall()
     return rows
+
+
+def _parse_timestamp(value: str) -> datetime:
+    """Accept ISO-8601 offsets emitted by both Python and the local date utility."""
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%S%z")
+
+
+def _load_industries(connection, taxonomy_version: str):
+    return [{"sw_industry_code": code, "sw_industry_name": name} for code, name in connection.execute(
+        "SELECT industry_code, industry_name FROM sw_industry_taxonomy WHERE taxonomy_version = ? "
+        "ORDER BY industry_level DESC, industry_code", [taxonomy_version]
+    ).fetchall()]
 
 
 if __name__ == "__main__":

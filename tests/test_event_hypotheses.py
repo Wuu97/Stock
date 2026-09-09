@@ -45,6 +45,13 @@ def test_single_source_is_rejected_but_independent_sources_are_eligible():
     assert connection.execute("SELECT status, evidence_quality FROM macro_event_hypotheses WHERE hypothesis_id = ?", [accepted]).fetchone() == ("SHADOW_ELIGIBLE", "AUTHORITATIVE_OFFICIAL")
 
 
+def test_official_subdomain_configuration_is_normalized():
+    connection, now = _connection()
+    accepted = persist_hypothesis(connection, _payload(), [_fact("one", "news.un.org", now)], now,
+                                  "sw_2026_v1", ["news.un.org"], now)
+    assert connection.execute("SELECT status, evidence_quality FROM macro_event_hypotheses WHERE hypothesis_id = ?", [accepted]).fetchone() == ("SHADOW_ELIGIBLE", "AUTHORITATIVE_OFFICIAL")
+
+
 def test_invalid_industry_and_late_evidence_fail_closed():
     connection, now = _connection()
     hypothesis_id = persist_hypothesis(connection, _payload("made-up"), [_fact("one", "reuters.com", now), _fact("two", "apnews.com", now)], now, "sw_2026_v1", [], now)
