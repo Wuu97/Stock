@@ -7,7 +7,7 @@ from typing import Iterable, Mapping, Optional, Sequence, Set
 from uuid import uuid4
 
 from .daily_risk import create_exit_intents
-from .features import build_features
+from .features import FeatureRow
 from .models import DayBar, FeeModel, OrderIntent
 from .portfolio import PortfolioPolicy, construct_buys
 from .risk import ExitRule
@@ -47,7 +47,12 @@ def replay_daily_strategy(connection, bars: Iterable[DayBar], trading_days: Sequ
         missing = [day.isoformat() for day in calendar[:-1] if day not in universe_by_date]
         if missing:
             raise ValueError(f"point-in-time universe snapshot is missing for: {', '.join(missing[:5])}")
-    by_day = {day: {bar.ticker: bar for bar in all_bars if bar.trade_date == day} for day in calendar}
+    by_day = {day: {} for day in calendar}
+    for bar in all_bars:
+        if bar.trade_date in by_day:
+            by_day[bar.trade_date][bar.ticker] = bar
+    feature_calendar = tuple(sorted({bar.trade_date for bar in all_bars if bar.trade_date <= config.end_date}))
+    features_by_day = _build_feature_rows_by_day(all_bars, feature_calendar, config.lookback_days)
     service = SettlementService(connection)
     spec = config.strategy_spec or baseline_strategy_spec(config.volume_multiple, config.top_n)
     provider = score_provider or resolve_score_provider(spec)
@@ -69,7 +74,7 @@ def replay_daily_strategy(connection, bars: Iterable[DayBar], trading_days: Sequ
         exits_signalled += len(create_exit_intents(
             connection, config.account_id, trade_date, next_day, all_bars, exit_rule
         ))
-        features = build_features(all_bars, trade_date, config.lookback_days)
+        features = features_by_day[trade_date]
         point_in_time_universe = universe_by_date[trade_date] if universe_by_date is not None else allowed_tickers
         if point_in_time_universe is not None:
             features = [row for row in features if row.ticker in point_in_time_universe]
@@ -139,3 +144,40 @@ def _pending_tickers(connection, account_id: str) -> set[str]:
         "SELECT ticker FROM sim_order_intents WHERE account_id = ? AND order_status = 'PENDING'", [account_id]
     ).fetchall()
     return {ticker for ticker, in pending}
+
+
+def _build_feature_rows_by_day(bars: Sequence[DayBar], calendar: Sequence[date], lookback_days: int) -> dict[date, list[FeatureRow]]:
+    """Incrementally build the same trailing-window features used by `build_features`.
+
+    A replay sees each bar only once, rather than rescanning all historical bars
+    for every decision date. Non-trading bars remain excluded exactly as before.
+    """
+    if lookback_days < 2:
+        raise ValueError("lookback_days must be at least two")
+    bars_by_day: dict[date, list[DayBar]] = {}
+    for bar in bars:
+        if bar.status == "TRADING":
+            bars_by_day.setdefault(bar.trade_date, []).append(bar)
+    histories: dict[str, list[DayBar]] = {}
+    rows_by_day: dict[date, list[FeatureRow]] = {}
+    for as_of_date in calendar:
+        for bar in bars_by_day.get(as_of_date, ()):
+            history = histories.setdefault(bar.ticker, [])
+            history.append(bar)
+            if len(history) > lookback_days:
+                del history[0]
+        rows = []
+        for ticker, history in histories.items():
+            if len(history) != lookback_days:
+                continue
+            closes = [bar.close for bar in history]
+            volumes = [bar.volume for bar in history]
+            average_volume = Decimal(sum(volumes)) / lookback_days
+            rows.append(FeatureRow(
+                ticker=ticker, as_of_trade_date=as_of_date, close=history[-1].close,
+                sma=sum(closes, Decimal("0")) / lookback_days, average_volume=average_volume,
+                momentum=(history[-1].close / history[0].close) - Decimal("1"),
+                volume_ratio=Decimal(history[-1].volume) / average_volume if average_volume else Decimal("0"),
+            ))
+        rows_by_day[as_of_date] = rows
+    return rows_by_day

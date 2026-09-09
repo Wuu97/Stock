@@ -5,7 +5,8 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from quant_core.backtest import BacktestConfig, replay_daily_strategy
+from quant_core.backtest import BacktestConfig, _build_feature_rows_by_day, replay_daily_strategy
+from quant_core.features import build_features
 from quant_core.models import DayBar, FeeModel
 from quant_core.risk import ExitRule
 from quant_core.portfolio import PortfolioPolicy
@@ -102,3 +103,19 @@ def test_equal_weight_backtest_creates_board_lot_orders_from_available_cash():
                           FeeModel("test", Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0")),
                           ExitRule(), {"600000.SH"})
     assert connection.execute("SELECT target_shares FROM sim_order_intents WHERE direction = 'BUY'").fetchone()[0] == 900
+
+
+def test_incremental_feature_cache_is_equivalent_to_daily_full_recalculation():
+    start = date(2026, 1, 2)
+    days = [start + timedelta(days=index) for index in range(25)]
+    bars = []
+    for index, day in enumerate(days):
+        bars.extend([
+            DayBar(day, "600000.SH", Decimal("10"), Decimal("10"), Decimal("10"), Decimal("10") + Decimal(index) / 100,
+                   100 + index, Decimal("1000"), Decimal("20"), Decimal("1")),
+            DayBar(day, "600001.SH", Decimal("10"), Decimal("10"), Decimal("10"), Decimal("11") - Decimal(index) / 100,
+                   200 + index, Decimal("1000"), Decimal("20"), Decimal("1")),
+        ])
+    cached = _build_feature_rows_by_day(bars, days, 20)
+    for day in days:
+        assert sorted(cached[day], key=lambda row: row.ticker) == sorted(build_features(bars, day, 20), key=lambda row: row.ticker)
