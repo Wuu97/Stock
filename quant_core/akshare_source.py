@@ -1,7 +1,7 @@
 """AKShare current-market-cap adapter for the dynamic monitoring universe."""
 
 from decimal import Decimal, InvalidOperation
-from datetime import datetime
+from datetime import datetime, time
 from typing import Mapping, Optional
 
 from .news import NewsDocument
@@ -56,7 +56,7 @@ def stock_news(symbol: str, received_at: datetime) -> tuple[NewsDocument, ...]:
         raise RuntimeError("AKShare stock news response is missing required fields")
     documents = []
     for index, row in frame.iterrows():
-        published_at = _parse_news_time(row["发布时间"])
+        published_at = _parse_news_time(row["发布时间"], received_at)
         documents.append(NewsDocument("akshare_stock_news_em", "STOCK", published_at, received_at,
                                       str(row["新闻标题"]), str(row["新闻内容"]), symbol,
                                       str(index), str(row["新闻链接"])))
@@ -74,7 +74,7 @@ def stock_announcements(notice_date: str, received_at: datetime) -> tuple[NewsDo
     if not required.issubset(frame.columns):
         raise RuntimeError("AKShare announcement response is missing required fields")
     url_column = "公告链接" if "公告链接" in frame.columns else "网址" if "网址" in frame.columns else None
-    return tuple(NewsDocument("akshare_stock_notice_report", "STOCK", _parse_news_time(row["公告日期"]), received_at,
+    return tuple(NewsDocument("akshare_stock_notice_report", "STOCK", _parse_news_time(row["公告日期"], received_at), received_at,
                               str(row["公告标题"]), str(row["公告标题"]), _ticker_from_code(str(row["代码"])),
                               str(index), str(row[url_column]) if url_column else None) for index, row in frame.iterrows())
 
@@ -89,16 +89,22 @@ def cls_flash_news(received_at: datetime) -> tuple[NewsDocument, ...]:
     required = {"发布时间", "内容"}
     if not required.issubset(frame.columns):
         raise RuntimeError("AKShare Cailianpress response is missing required fields")
-    return tuple(NewsDocument("akshare_cls_flash", "MACRO", _parse_news_time(row["发布时间"]), received_at,
+    return tuple(NewsDocument("akshare_cls_flash", "MACRO", _parse_news_time(row["发布时间"], received_at), received_at,
                               str(row.get("标题") or row["内容"])[:200], str(row["内容"]), external_id=str(index))
                  for index, row in frame.iterrows())
 
 
-def _parse_news_time(value: object) -> datetime:
+def _parse_news_time(value: object, fallback_received_at: Optional[datetime] = None) -> datetime:
     text = str(value)
     if len(text) == 16 and text.endswith("Z") and text[8] == "T":
         from datetime import timezone
         return datetime.strptime(text, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    if len(text) == 8 and text.count(":") == 2:
+        if fallback_received_at is None or fallback_received_at.tzinfo is None:
+            raise ValueError("time-only news timestamps require a timezone-aware received_at")
+        from zoneinfo import ZoneInfo
+        local_date = fallback_received_at.astimezone(ZoneInfo("Asia/Shanghai")).date()
+        return datetime.combine(local_date, time.fromisoformat(text), tzinfo=ZoneInfo("Asia/Shanghai"))
     parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
         from zoneinfo import ZoneInfo

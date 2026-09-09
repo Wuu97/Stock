@@ -103,6 +103,49 @@ def load_activity(connection, account_id: str) -> dict:
     }
 
 
+def load_news_monitor(connection, limit: int = 50) -> dict:
+    """Return archived news and gated event hypotheses for the read-only monitor."""
+    if limit <= 0:
+        raise ValueError("news monitor limit must be positive")
+    documents = connection.execute(
+        "SELECT document_id, source_channel, published_at, received_at, headline, source_url, raw_artifact_sha256 "
+        "FROM news_documents ORDER BY received_at DESC LIMIT ?", [limit]
+    ).fetchall()
+    requests = connection.execute(
+        "SELECT source_channel, requested_at, http_status, cache_hit, backoff_seconds, error_code "
+        "FROM external_request_audit ORDER BY requested_at DESC LIMIT ?", [limit],
+    ).fetchall()
+    hypotheses = connection.execute(
+        "SELECT hypothesis_id, effective_as_of_timestamp, evidence_quality, evidence_domain_count, status, rejection_reason "
+        "FROM macro_event_hypotheses ORDER BY created_at DESC LIMIT ?", [limit],
+    ).fetchall()
+    impacts = connection.execute(
+        "SELECT i.hypothesis_id, i.industry_code, t.industry_name, i.impact_direction, i.event_score, "
+        "i.expected_duration_days, i.uncertainty_text "
+        "FROM macro_event_impacts i JOIN sw_industry_taxonomy t "
+        "ON t.taxonomy_version = i.taxonomy_version AND t.industry_code = i.industry_code "
+        "ORDER BY i.hypothesis_id, i.industry_code"
+    ).fetchall()
+    impacts_by_hypothesis = {}
+    for hypothesis_id, code, name, direction, score, duration, uncertainty in impacts:
+        impacts_by_hypothesis.setdefault(hypothesis_id, []).append({
+            "industry_code": code, "industry_name": name, "direction": direction, "score": _number(score),
+            "duration_days": duration, "uncertainty": uncertainty,
+        })
+    return {
+        "documents": [{"id": doc_id, "source": source, "published_at": str(published), "received_at": str(received),
+                       "headline": headline, "url": url, "artifact_sha256": artifact}
+                      for doc_id, source, published, received, headline, url, artifact in documents],
+        "requests": [{"source": source, "requested_at": str(requested), "status": status, "cache_hit": cache_hit,
+                      "backoff_seconds": _number(backoff), "error": error}
+                     for source, requested, status, cache_hit, backoff, error in requests],
+        "hypotheses": [{"id": hyp_id, "effective_as_of": str(as_of), "evidence_quality": quality,
+                         "domain_count": domain_count, "status": status, "rejection_reason": reason,
+                         "impacts": impacts_by_hypothesis.get(hyp_id, [])}
+                        for hyp_id, as_of, quality, domain_count, status, reason in hypotheses],
+    }
+
+
 def _return(close, cost, shares):
     if close is None or not shares or not cost:
         return None

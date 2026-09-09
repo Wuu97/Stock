@@ -1,11 +1,12 @@
 from datetime import datetime, timezone
+import gzip
 import json
 
 import duckdb
 import pytest
 
 from quant_core.news import NewsArchive, NewsDocument, parse_macro_event_mapping, parse_risk_veto
-from quant_core.world_news_source import gdelt_articles_cached
+from quant_core.world_news_source import gdelt_articles_cached, native_rss_articles_cached
 
 
 def test_news_archive_deduplicates_facts_and_keeps_assessment_immutable():
@@ -44,4 +45,16 @@ def test_gdelt_hour_cache_creates_documents_with_raw_artifact(tmp_path):
     path.write_text(json.dumps({"articles": [{"title": "Event", "url": "https://example.test/a", "seendate": "20260908T090000Z"}]}))
     result = gdelt_articles_cached("Middle   East Conflict", now, tmp_path)
     assert result.attempts[0][3] == "CACHE_HIT"
+    assert result.documents[0].raw_artifact_sha256 == result.artifact_sha256
+
+
+def test_native_rss_hour_cache_creates_attributable_macro_documents(tmp_path):
+    now = datetime(2026, 9, 8, 10, tzinfo=timezone.utc)
+    feed_url = "https://news.example.test/rss.xml"
+    key = __import__("hashlib").sha256(f"{feed_url}_20260908T10".encode("utf-8")).hexdigest()
+    path = tmp_path / f"rss_{key}.xml"
+    path.write_bytes(gzip.compress(b"""<rss><channel><item><title>Official update</title><link>https://news.example.test/a</link><guid>1</guid><pubDate>Mon, 08 Sep 2026 09:00:00 +0000</pubDate><description>Details</description></item></channel></rss>"""))
+    result = native_rss_articles_cached(feed_url, "official_fixture", now, tmp_path)
+    assert result.attempts[0][3] == "CACHE_HIT"
+    assert result.documents[0].source_url == "https://news.example.test/a"
     assert result.documents[0].raw_artifact_sha256 == result.artifact_sha256

@@ -6,14 +6,14 @@ from pathlib import Path
 import duckdb
 import streamlit as st
 
-from quant_core.dashboard import load_activity, load_dashboard
+from quant_core.dashboard import load_activity, load_dashboard, load_news_monitor
 
 
 def _read(db_path: Path, account_id: str):
     """Open a short-lived read-only connection for every Streamlit rerun."""
     connection = duckdb.connect(str(db_path), read_only=True)
     try:
-        return load_dashboard(connection, account_id), load_activity(connection, account_id)
+        return load_dashboard(connection, account_id), load_activity(connection, account_id), load_news_monitor(connection)
     finally:
         connection.close()
 
@@ -58,6 +58,11 @@ def _empty(message: str) -> None:
     st.info(message, icon="ℹ️")
 
 
+def _news_rows(documents):
+    return [{"来源": row["source"], "发布时间": row["published_at"], "接收时间": row["received_at"],
+             "标题": row["headline"], "原始快照哈希": (row["artifact_sha256"] or "—")[:12]} for row in documents]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--db", default="data/top50/quant.duckdb")
@@ -85,7 +90,7 @@ def main() -> None:
         st.caption("生产基线会参与模拟撮合；事件影子仅用于对照评估。")
 
     try:
-        data, activity = _read(db_path, account_id)
+        data, activity, news = _read(db_path, account_id)
     except Exception as error:
         st.error(f"无法读取看板：{error}")
         return
@@ -108,8 +113,8 @@ def main() -> None:
     if not rejected and not pending_exits:
         st.success("当前没有拒单或待执行风控卖单。", icon="✅")
 
-    overview, nav_tab, positions_tab, rec_tab, risk_tab, activity_tab = st.tabs(
-        ["总览", "资产净值", "当前持仓", "冻结推荐", "风控状态", "订单与成交"]
+    overview, nav_tab, positions_tab, rec_tab, risk_tab, activity_tab, news_tab = st.tabs(
+        ["总览", "资产净值", "当前持仓", "冻结推荐", "风控状态", "订单与成交", "新闻与事件"]
     )
     with overview:
         left, right = st.columns((2, 1))
@@ -177,6 +182,32 @@ def main() -> None:
             st.dataframe([{"拒单原因": row["reason"], "次数": row["count"]} for row in activity["reject_reasons"]], hide_index=True, width="stretch")
         else:
             _empty("尚无拒单记录。")
+    with news_tab:
+        st.subheader("新闻事实与事件影子研究")
+        st.caption("新闻仅在归档、时间因果、来源质量和行业字典校验后，才可能进入影子事件假设；不会直接创建账户订单。")
+        if news["hypotheses"]:
+            for hypothesis in news["hypotheses"]:
+                status = "✅ 影子可用" if hypothesis["status"] == "SHADOW_ELIGIBLE" else "⛔ 已拒绝"
+                with st.expander(f"{status} · {hypothesis['effective_as_of']} · {hypothesis['evidence_quality']}"):
+                    st.caption(f"独立域名：{hypothesis['domain_count']} · 拒绝原因：{hypothesis['rejection_reason'] or '—'}")
+                    if hypothesis["impacts"]:
+                        st.dataframe([{"申万代码": item["industry_code"], "行业": item["industry_name"], "方向": item["direction"],
+                                       "事件分": item["score"], "预期天数": item["duration_days"], "不确定性": item["uncertainty"]}
+                                      for item in hypothesis["impacts"]], hide_index=True, width="stretch")
+        else:
+            _empty("尚无已生成的事件假设；先归档新闻并运行事件推理。")
+        st.subheader("最近归档新闻")
+        if news["documents"]:
+            st.dataframe(_news_rows(news["documents"]), hide_index=True, width="stretch")
+        else:
+            _empty("尚未归档新闻。")
+        st.subheader("外部请求审计")
+        if news["requests"]:
+            st.dataframe([{"来源": row["source"], "请求时间": row["requested_at"], "HTTP": row["status"] or "—",
+                           "缓存命中": "是" if row["cache_hit"] else "否", "退避秒数": row["backoff_seconds"],
+                           "错误": row["error"] or "—"} for row in news["requests"]], hide_index=True, width="stretch")
+        else:
+            _empty("尚无外部请求审计记录。")
 
 
 if __name__ == "__main__":

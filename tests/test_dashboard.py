@@ -1,10 +1,11 @@
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
 import duckdb
 
-from quant_core.dashboard import load_activity, load_dashboard
+from quant_core.dashboard import load_activity, load_dashboard, load_news_monitor
+from quant_core.news import NewsArchive, NewsDocument
 from quant_core.models import FeeModel, OrderIntent
 from quant_core.settlement import SettlementService
 from tests.test_risk import _bar
@@ -36,3 +37,17 @@ def test_activity_is_scoped_to_the_requested_account():
     activity = load_activity(connection, "a")
     assert [row["ticker"] for row in activity["orders"]] == ["600000.SH"]
     assert len(activity["orders"]) == 1
+
+
+def test_news_monitor_returns_immutable_facts_and_request_audit():
+    connection = duckdb.connect(":memory:")
+    connection.execute(Path("sql/schema.sql").read_text())
+    now = datetime(2026, 9, 8, tzinfo=timezone.utc)
+    archive = NewsArchive(connection)
+    archive.store_document(NewsDocument("official_fixture", "MACRO", now, now, "事件", "事件正文",
+                                        source_url="https://example.gov/news", raw_artifact_sha256="a" * 64), now)
+    archive.record_request("official_fixture", "b" * 64, now, 1, False, 200)
+    monitor = load_news_monitor(connection)
+    assert monitor["documents"][0]["source"] == "official_fixture"
+    assert monitor["documents"][0]["artifact_sha256"] == "a" * 64
+    assert monitor["requests"][0]["status"] == 200
