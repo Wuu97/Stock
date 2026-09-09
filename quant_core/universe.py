@@ -98,3 +98,17 @@ class UniverseService:
         return {row[0] for row in self.connection.execute(
             "SELECT ticker FROM universe_members WHERE universe_snapshot_id = ?", [universe_snapshot_id]
         ).fetchall()}
+
+    def members_by_trade_date(self, group_name: str, start_date: date, end_date: date) -> dict[date, set[str]]:
+        """Return the immutable membership set that was known on each historical date."""
+        rows = self.connection.execute(
+            "SELECT u.as_of_trade_date, m.ticker FROM universe_snapshots u "
+            "JOIN universe_members m ON m.universe_snapshot_id = u.universe_snapshot_id "
+            "WHERE u.group_name = ? AND u.as_of_trade_date BETWEEN ? AND ? "
+            "ORDER BY u.as_of_trade_date, m.ticker",
+            [group_name, start_date, end_date],
+        ).fetchall()
+        members: dict[date, set[str]] = {}
+        for trade_date, ticker in rows:
+            members.setdefault(trade_date, set()).add(ticker)
+        return members

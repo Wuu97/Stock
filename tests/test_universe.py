@@ -64,3 +64,22 @@ def test_multiple_group_snapshots_remain_independent():
     )
     assert service.member_tickers(large_cap) == {"AAA"}
     assert service.member_tickers(mid_cap) == {"AAA", "BBB"}
+
+
+def test_universe_service_loads_members_by_their_historical_trade_date():
+    con = duckdb.connect(":memory:")
+    con.execute(Path("sql/schema.sql").read_text())
+    service = UniverseService(con)
+    now = datetime.now(timezone.utc)
+    service.store_market_caps("cap", now, "fixture", {"AAA": Decimal("90000000000"), "BBB": Decimal("90000000000")}, now)
+    bars = []
+    for index in range(32):
+        day = date(2026, 8, 1) + timedelta(days=index)
+        bars.extend([_bar(day, "AAA", Decimal("10") + index), _bar(day, "BBB", Decimal("10") + index * 2)])
+    rule = DynamicUniverseRule("large_cap_momentum", Decimal("1"), 30, 1)
+    service.create_snapshot("cap", date(2026, 8, 31), rule, bars, now)
+    service.create_snapshot("cap", date(2026, 9, 1), rule, bars, now)
+
+    by_date = service.members_by_trade_date("large_cap_momentum", date(2026, 8, 31), date(2026, 9, 1))
+    assert by_date[date(2026, 8, 31)] == {"BBB"}
+    assert by_date[date(2026, 9, 1)] == {"BBB"}

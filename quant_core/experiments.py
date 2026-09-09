@@ -15,6 +15,14 @@ from .strategy_research import StrategySpec
 
 
 @dataclass(frozen=True)
+class BenchmarkClose:
+    """An immutable benchmark observation, independent of tradable stock bars."""
+
+    trade_date: date
+    close: Decimal
+
+
+@dataclass(frozen=True)
 class ExperimentSpec:
     strategy: StrategySpec
     portfolio: PortfolioPolicy
@@ -25,10 +33,12 @@ class ExperimentSpec:
     market_snapshot_ids: tuple[str, ...]
     universe_reference: str
     benchmark_ticker: str
+    benchmark_data_reference: str
     initial_cash: Decimal
 
     def __post_init__(self) -> None:
-        if self.start_date > self.end_date or not self.market_snapshot_ids or not self.cost_model_version or not self.benchmark_ticker or self.initial_cash <= 0:
+        if (self.start_date > self.end_date or not self.market_snapshot_ids or not self.cost_model_version
+                or not self.benchmark_ticker or not self.benchmark_data_reference or self.initial_cash <= 0):
             raise ValueError("experiment spec is incomplete")
 
     def canonical_json(self) -> str:
@@ -38,6 +48,7 @@ class ExperimentSpec:
             "start_date": self.start_date.isoformat(), "end_date": self.end_date.isoformat(),
             "market_snapshot_ids": sorted(self.market_snapshot_ids), "universe_reference": self.universe_reference,
             "benchmark_ticker": self.benchmark_ticker,
+            "benchmark_data_reference": self.benchmark_data_reference,
             "initial_cash": str(self.initial_cash),
         }
         return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
