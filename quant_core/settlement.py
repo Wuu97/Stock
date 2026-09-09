@@ -42,6 +42,10 @@ class SettlementService:
              intent.target_trade_date, intent.direction, intent.shares, datetime.now(timezone.utc)],
         )
 
+    def cash_balance(self, account_id: str) -> Decimal:
+        """Return ledger-derived cash for decision-time portfolio construction."""
+        return self._cash(account_id)
+
     def settle(self, intent: OrderIntent, bar: DayBar, next_trading_day: date, fee: FeeModel) -> str:
         self._validate_pending_intent(intent)
         result = match_next_open(intent, bar, fee)

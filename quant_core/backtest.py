@@ -9,6 +9,7 @@ from uuid import uuid4
 from .daily_risk import create_exit_intents
 from .features import build_features
 from .models import DayBar, FeeModel, OrderIntent
+from .portfolio import PortfolioPolicy, construct_buys
 from .risk import ExitRule
 from .settlement import SettlementService
 from .strategy_research import ScoreProvider, StrategySpec, baseline_strategy_spec, resolve_score_provider
@@ -24,6 +25,7 @@ class BacktestConfig:
     top_n: int = 5
     volume_multiple: Decimal = Decimal("1.0")
     strategy_spec: Optional[StrategySpec] = None
+    portfolio_policy: Optional[PortfolioPolicy] = None
 
 
 def replay_daily_strategy(connection, bars: Iterable[DayBar], trading_days: Sequence[date],
@@ -48,6 +50,7 @@ def replay_daily_strategy(connection, bars: Iterable[DayBar], trading_days: Sequ
     service = SettlementService(connection)
     spec = config.strategy_spec or baseline_strategy_spec(config.volume_multiple, config.top_n)
     provider = score_provider or resolve_score_provider(spec)
+    policy = config.portfolio_policy or PortfolioPolicy.fixed_shares(config.shares_per_order)
     if provider.spec != spec:
         raise ValueError("score provider spec does not match backtest config")
     buys_submitted = 0
@@ -66,14 +69,15 @@ def replay_daily_strategy(connection, bars: Iterable[DayBar], trading_days: Sequ
         point_in_time_universe = universe_by_date[trade_date] if universe_by_date is not None else allowed_tickers
         if point_in_time_universe is not None:
             features = [row for row in features if row.ticker in point_in_time_universe]
-        blocked = _blocked_tickers(connection, config.account_id)
+        held = _held_tickers(connection, config.account_id)
+        blocked = held | _pending_tickers(connection, config.account_id)
         scored = provider.score(features, trade_date)
         if scored.spec != spec or scored.as_of_trade_date != trade_date:
             raise ValueError("score provider returned an invalid strategy result")
         recommendations = [row for row in scored.recommendations if row.ticker not in blocked]
-        for recommendation in recommendations:
+        for planned in construct_buys(recommendations, policy, service.cash_balance(config.account_id), fee, len(held)):
             service.create_intent(OrderIntent(
-                str(uuid4()), config.account_id, recommendation.ticker, next_day, "BUY", config.shares_per_order
+                str(uuid4()), config.account_id, planned.ticker, next_day, "BUY", planned.shares
             ))
             buys_submitted += 1
     orders = connection.execute(
@@ -107,14 +111,18 @@ def _settle_pending(connection, service: SettlementService, account_id: str,
         service.settle(OrderIntent(intent_id, account_id, ticker, trade_date, direction, shares), bar, successor, fee)
 
 
-def _blocked_tickers(connection, account_id: str) -> set[str]:
+def _held_tickers(connection, account_id: str) -> set[str]:
     held = connection.execute(
         "SELECT l.ticker FROM sim_position_lots l LEFT JOIN ("
         " SELECT lot_id, SUM(shares_deducted) AS disposed FROM sim_lot_disposal_events GROUP BY lot_id"
         ") d ON d.lot_id = l.lot_id WHERE l.account_id = ? "
         "GROUP BY l.ticker HAVING SUM(l.orig_shares - COALESCE(d.disposed, 0)) > 0", [account_id]
     ).fetchall()
+    return {ticker for ticker, in held}
+
+
+def _pending_tickers(connection, account_id: str) -> set[str]:
     pending = connection.execute(
         "SELECT ticker FROM sim_order_intents WHERE account_id = ? AND order_status = 'PENDING'", [account_id]
     ).fetchall()
-    return {ticker for ticker, in held + pending}
+    return {ticker for ticker, in pending}

@@ -8,6 +8,7 @@ import pytest
 from quant_core.backtest import BacktestConfig, replay_daily_strategy
 from quant_core.models import DayBar, FeeModel
 from quant_core.risk import ExitRule
+from quant_core.portfolio import PortfolioPolicy
 from quant_core.settlement import SettlementService
 from quant_core.strategy_research import baseline_strategy_spec, resolve_score_provider
 
@@ -85,3 +86,19 @@ def test_explicit_baseline_provider_preserves_replay_orders_executions_and_nav()
                   "SELECT direction, deal_shares, deal_price_unadj FROM sim_executions ORDER BY trade_date, ticker",
                   "SELECT cash_balance, securities_value, total_equity FROM sim_nav_daily ORDER BY trade_date"):
         assert default.execute(query).fetchall() == explicit.execute(query).fetchall()
+
+
+def test_equal_weight_backtest_creates_board_lot_orders_from_available_cash():
+    connection = duckdb.connect(":memory:")
+    connection.execute(Path("sql/schema.sql").read_text())
+    start = date(2026, 1, 2)
+    days = [start + timedelta(days=index) for index in range(25)]
+    bars = [DayBar(day, "600000.SH", Decimal("10"), Decimal("10.2"), Decimal("9.8"), Decimal("10") + Decimal(index) / Decimal("100"),
+                   1000, Decimal("10000"), Decimal("20"), Decimal("1")) for index, day in enumerate(days)]
+    SettlementService(connection).create_account("equal", "test", Decimal("10000"), start)
+    replay_daily_strategy(connection, bars, days,
+                          BacktestConfig("equal", days[20], days[-1], top_n=1, volume_multiple=Decimal("0.5"),
+                                         portfolio_policy=PortfolioPolicy.equal_weight(1)),
+                          FeeModel("test", Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0")),
+                          ExitRule(), {"600000.SH"})
+    assert connection.execute("SELECT target_shares FROM sim_order_intents WHERE direction = 'BUY'").fetchone()[0] == 900
