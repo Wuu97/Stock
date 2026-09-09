@@ -23,11 +23,16 @@ class Recommendation:
 
 
 def select_baseline(features: Iterable[FeatureRow], config: BaselineConfig) -> List[Recommendation]:
+    return rank_baseline(features, config)[:config.top_n]
+
+
+def rank_baseline(features: Iterable[FeatureRow], config: BaselineConfig) -> List[Recommendation]:
+    """Rank every rule-qualified security; portfolio selection remains a separate concern."""
     qualified = [
         row for row in features
         if row.close > row.sma and row.volume_ratio >= config.volume_multiple
     ]
-    ranked = sorted(qualified, key=lambda row: (row.momentum, row.ticker), reverse=True)[:config.top_n]
+    ranked = sorted(qualified, key=lambda row: (row.momentum, row.ticker), reverse=True)
     return [
         Recommendation(
             ticker=row.ticker,
