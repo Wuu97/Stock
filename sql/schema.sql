@@ -36,6 +36,26 @@ CREATE TABLE IF NOT EXISTS daily_bars (
     PRIMARY KEY (market_snapshot_id, trade_date, ticker)
 );
 
+CREATE TABLE IF NOT EXISTS trading_status_snapshots (
+    trading_status_snapshot_id VARCHAR PRIMARY KEY,
+    source_channel VARCHAR NOT NULL,
+    start_trade_date DATE NOT NULL,
+    end_trade_date DATE NOT NULL,
+    raw_artifact_path VARCHAR NOT NULL,
+    raw_artifact_sha256 VARCHAR NOT NULL,
+    received_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS trading_status_events (
+    trading_status_snapshot_id VARCHAR NOT NULL REFERENCES trading_status_snapshots(trading_status_snapshot_id),
+    ticker VARCHAR NOT NULL,
+    trade_date DATE NOT NULL,
+    status_code VARCHAR NOT NULL CHECK (status_code IN ('SUSPENDED', 'RESUMED')),
+    suspend_timing VARCHAR,
+    PRIMARY KEY (trading_status_snapshot_id, ticker, trade_date)
+);
+
 CREATE TABLE IF NOT EXISTS market_cap_snapshots (
     market_cap_snapshot_id VARCHAR PRIMARY KEY,
     captured_at TIMESTAMPTZ NOT NULL,
@@ -245,6 +265,17 @@ CREATE TABLE IF NOT EXISTS sim_positions_daily (
     total_shares BIGINT NOT NULL CHECK (total_shares >= 0),
     available_shares BIGINT NOT NULL CHECK (available_shares >= 0),
     book_cost_balance DECIMAL(20,4) NOT NULL,
+    PRIMARY KEY (account_id, trade_date, ticker)
+);
+
+CREATE TABLE IF NOT EXISTS sim_suspension_valuation_events (
+    account_id VARCHAR NOT NULL REFERENCES sim_accounts(account_id),
+    trade_date DATE NOT NULL,
+    ticker VARCHAR NOT NULL,
+    mark_price DECIMAL(20,4) NOT NULL,
+    source_trade_date DATE NOT NULL,
+    mark_basis VARCHAR NOT NULL CHECK (mark_basis = 'OFFICIAL_SUSPENSION_LAST_CLOSE'),
+    created_at TIMESTAMPTZ NOT NULL,
     PRIMARY KEY (account_id, trade_date, ticker)
 );
 

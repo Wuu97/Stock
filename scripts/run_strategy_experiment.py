@@ -20,6 +20,7 @@ from quant_core.portfolio import PortfolioPolicy
 from quant_core.risk import ExitRule
 from quant_core.settlement import SettlementService
 from quant_core.strategy_research import baseline_strategy_spec, momentum_volume_strategy_spec, pure_momentum_strategy_spec
+from quant_core.trading_status import TradingStatusStore
 from quant_core.universe import UniverseService
 
 
@@ -34,6 +35,7 @@ def main() -> None:
     parser.add_argument("--end-date", required=True)
     parser.add_argument("--benchmark-ticker", required=True)
     parser.add_argument("--benchmark-close-csv", help="Archived real benchmark closes with trade_date,ticker,adj_close columns")
+    parser.add_argument("--trading-status-source-channel", default="tushare_suspend_d")
     universe_input = parser.add_mutually_exclusive_group()
     universe_input.add_argument("--universe-snapshot-id")
     universe_input.add_argument("--universe-group-name")
@@ -79,6 +81,9 @@ def main() -> None:
                             else universe_service.members_by_trade_date(args.universe_group_name, start, end))
         universe_reference = (f"PIT_GROUP:{args.universe_group_name}" if args.universe_group_name
                               else args.universe_snapshot_id or "ALL_BARS_UNIVERSE")
+        suspended_tickers_by_date = TradingStatusStore(connection).suspended_tickers_by_date(
+            args.trading_status_source_channel, start, end
+        )
         benchmark_bars, benchmark_reference = _load_benchmark(args.benchmark_close_csv, args.benchmark_ticker)
         required_tickers = set() if benchmark_bars else {args.benchmark_ticker}
         if allowed is not None:
@@ -98,7 +103,8 @@ def main() -> None:
             store.create(experiment_id, args.account_id, spec, now)
             replay = replay_daily_strategy(connection, bars, days,
                                            BacktestConfig(args.account_id, start, end, args.shares_per_order, 20, args.top_n,
-                                                          volume_multiple, strategy, policy), fee, rule, allowed, universe_by_date)
+                                                          volume_multiple, strategy, policy), fee, rule, allowed, universe_by_date,
+                                           suspended_tickers_by_date=suspended_tickers_by_date)
             metrics = calculate_metrics(connection, args.account_id,
                                         benchmark_bars or [bar for bar in bars if bar.ticker == args.benchmark_ticker])
             store.store_result(experiment_id, metrics, datetime.now(timezone.utc))
@@ -135,7 +141,8 @@ def _discard_failed_experiment(connection, account_id: str) -> None:
         placeholders = ",".join("?" for _ in lot_ids)
         connection.execute("DELETE FROM sim_lot_disposal_events WHERE lot_id IN (" + placeholders + ")", lot_ids)
         connection.execute("DELETE FROM sim_lot_adjustment_events WHERE lot_id IN (" + placeholders + ")", lot_ids)
-    for table in ("sim_dividend_entitlements", "sim_exit_signals", "sim_positions_daily", "sim_nav_daily", "sim_executions", "sim_order_intents"):
+    for table in ("sim_dividend_entitlements", "sim_exit_signals", "sim_suspension_valuation_events",
+                  "sim_positions_daily", "sim_nav_daily", "sim_executions", "sim_order_intents"):
         connection.execute(f"DELETE FROM {table} WHERE account_id = ?", [account_id])
     connection.execute("DELETE FROM sim_position_lots WHERE account_id = ?", [account_id])
     connection.execute("DELETE FROM ledger_journal_entries WHERE account_id = ?", [account_id])

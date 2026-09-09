@@ -32,7 +32,8 @@ def replay_daily_strategy(connection, bars: Iterable[DayBar], trading_days: Sequ
                           config: BacktestConfig, fee: FeeModel, exit_rule: ExitRule,
                           allowed_tickers: Optional[Set[str]] = None,
                           universe_by_date: Optional[Mapping[date, Set[str]]] = None,
-                          score_provider: Optional[ScoreProvider] = None) -> dict:
+                          score_provider: Optional[ScoreProvider] = None,
+                          suspended_tickers_by_date: Optional[Mapping[date, Set[str]]] = None) -> dict:
     """Replay decisions at each close and execute them at the following open.
 
     `bars` must already contain provider-supplied limits. This function intentionally
@@ -55,11 +56,14 @@ def replay_daily_strategy(connection, bars: Iterable[DayBar], trading_days: Sequ
         raise ValueError("score provider spec does not match backtest config")
     buys_submitted = 0
     exits_signalled = 0
+    last_official_closes: dict[str, tuple[date, Decimal]] = {}
     for index, trade_date in enumerate(calendar):
         next_day = calendar[index + 1] if index + 1 < len(calendar) else None
-        _settle_pending(connection, service, config.account_id, by_day[trade_date], trade_date, next_day, fee)
+        suspended = (suspended_tickers_by_date or {}).get(trade_date, set())
+        _settle_pending(connection, service, config.account_id, by_day[trade_date], trade_date, next_day, fee, suspended)
         prices = {ticker: bar.close for ticker, bar in by_day[trade_date].items()}
-        service.value_day(config.account_id, trade_date, prices)
+        last_official_closes.update((ticker, (trade_date, close)) for ticker, close in prices.items())
+        service.value_day(config.account_id, trade_date, prices, suspended, last_official_closes)
         if next_day is None:
             continue
         exits_signalled += len(create_exit_intents(
@@ -93,7 +97,7 @@ def replay_daily_strategy(connection, bars: Iterable[DayBar], trading_days: Sequ
 
 def _settle_pending(connection, service: SettlementService, account_id: str,
                     day_bars: Mapping[str, DayBar], trade_date: date, next_day: Optional[date],
-                    fee: FeeModel) -> None:
+                    fee: FeeModel, suspended_tickers: Set[str]) -> None:
     rows = connection.execute(
         "SELECT intent_id, ticker, direction, target_shares FROM sim_order_intents "
         "WHERE account_id = ? AND target_trade_date = ? AND order_status = 'PENDING' ORDER BY intent_id",
@@ -103,6 +107,15 @@ def _settle_pending(connection, service: SettlementService, account_id: str,
     for intent_id, ticker, direction, shares in rows:
         bar = day_bars.get(ticker)
         if bar is None:
+            if ticker in suspended_tickers:
+                if direction == "SELL" and next_day is not None:
+                    connection.execute("UPDATE sim_order_intents SET target_trade_date = ? WHERE intent_id = ?", [next_day, intent_id])
+                else:
+                    connection.execute(
+                        "UPDATE sim_order_intents SET order_status = 'REJECTED', reject_reason_code = 'SUSPENDED' WHERE intent_id = ?",
+                        [intent_id],
+                    )
+                continue
             connection.execute(
                 "UPDATE sim_order_intents SET order_status = 'REJECTED', reject_reason_code = 'DATA_MISSING_BAR' WHERE intent_id = ?",
                 [intent_id],

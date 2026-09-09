@@ -3,6 +3,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import duckdb
+import pytest
 
 from quant_core.models import DayBar, FeeModel, OrderIntent
 from quant_core.settlement import SettlementService
@@ -44,3 +45,21 @@ def test_settlement_rejects_same_day_sale_without_partial_writes():
     service.create_intent(sell)
     assert service.settle(sell, _bar(date(2026, 9, 2), sell.ticker, Decimal("10"), Decimal("10")), date(2026, 9, 3), FEE) == "REJECTED"
     assert con.execute("SELECT COUNT(*) FROM sim_executions WHERE direction = 'SELL'").fetchone()[0] == 0
+
+
+def test_settlement_carries_only_an_official_suspension_last_close():
+    con = duckdb.connect(":memory:")
+    con.execute(Path("sql/schema.sql").read_text())
+    service = SettlementService(con)
+    service.create_account("acct", "test", Decimal("100000"), date(2026, 9, 1))
+    buy = OrderIntent("buy", "acct", "600000.SH", date(2026, 9, 2), "BUY", 100)
+    service.create_intent(buy)
+    service.settle(buy, _bar(date(2026, 9, 2), buy.ticker, Decimal("10"), Decimal("10")), date(2026, 9, 3), FEE)
+
+    service.value_day("acct", date(2026, 9, 3), {}, {"600000.SH"},
+                      {"600000.SH": (date(2026, 9, 2), Decimal("10"))})
+
+    mark = con.execute("SELECT mark_price, source_trade_date, mark_basis FROM sim_suspension_valuation_events").fetchone()
+    assert (Decimal(str(mark[0])), mark[1], mark[2]) == (Decimal("10.0000"), date(2026, 9, 2), "OFFICIAL_SUSPENSION_LAST_CLOSE")
+    with pytest.raises(ValueError, match="missing official close"):
+        service.value_day("acct", date(2026, 9, 4), {})

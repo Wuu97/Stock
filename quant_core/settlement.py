@@ -3,7 +3,7 @@
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Mapping, Optional, Set, Tuple
 from uuid import uuid4
 
 from .ledger import buy_entries, initial_funding, journal_rows, sell_entries
@@ -56,7 +56,10 @@ class SettlementService:
             return self._settle_buy(intent, result, next_trading_day, fee.version)
         return self._settle_sell(intent, result, fee.version)
 
-    def value_day(self, account_id: str, trade_date: date, closing_prices: Dict[str, Decimal]) -> None:
+    def value_day(self, account_id: str, trade_date: date, closing_prices: Dict[str, Decimal],
+                  suspended_tickers: Optional[Set[str]] = None,
+                  last_official_closes: Optional[Mapping[str, Tuple[date, Decimal]]] = None) -> None:
+        """Mark positions from official closes, carrying only officially suspended symbols."""
         lots, disposals = self._load_inventory(account_id)
         by_ticker: Dict[str, List[Lot]] = {}
         for lot in lots:
@@ -71,7 +74,15 @@ class SettlementService:
                 remaining = sum(remaining_by_lot.values())
                 if remaining <= 0:
                     continue
-                price = closing_prices[ticker]
+                price = closing_prices.get(ticker)
+                if price is None:
+                    if ticker not in (suspended_tickers or set()) or ticker not in (last_official_closes or {}):
+                        raise ValueError(f"missing official close for held ticker {ticker} on {trade_date.isoformat()}")
+                    source_date, price = last_official_closes[ticker]
+                    self.connection.execute(
+                        "INSERT OR REPLACE INTO sim_suspension_valuation_events VALUES (?, ?, ?, ?, ?, 'OFFICIAL_SUSPENSION_LAST_CLOSE', ?)",
+                        [account_id, trade_date, ticker, price, source_date, datetime.now(timezone.utc)],
+                    )
                 available = sum(remaining_by_lot[lot.lot_id] for lot in ticker_lots
                                 if lot.available_from_date <= trade_date)
                 cost = money(sum(Decimal(remaining_by_lot[lot.lot_id]) * lot.unit_cost
