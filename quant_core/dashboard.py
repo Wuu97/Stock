@@ -38,8 +38,10 @@ def load_dashboard(connection, account_id: str) -> dict:
         "WHERE account_id = ? ORDER BY trade_date DESC LIMIT 60", [account_id]
     ).fetchall()
     recommendations = connection.execute(
-        "SELECT r.target_trade_date, i.ticker, i.rank_order, i.rank_score, i.ref_close_unadj "
+        "SELECT r.target_trade_date, i.ticker, i.rank_order, i.rank_score, i.ref_close_unadj, "
+        "COALESCE(m.execution_mode, 'PRODUCTION') "
         "FROM recommendation_runs r JOIN recommendation_items i ON i.run_id = r.run_id "
+        "LEFT JOIN recommendation_run_modes m ON m.run_id = r.run_id "
         "WHERE r.run_status = 'FROZEN' ORDER BY r.target_trade_date DESC, i.rank_order LIMIT 20"
     ).fetchall()
     return {
@@ -62,8 +64,8 @@ def load_dashboard(connection, account_id: str) -> dict:
             for day, cash, value, equity, unit_nav, drawdown in reversed(nav)
         ],
         "recommendations": [
-            {"scope": "全局推荐", "target_date": str(day), "ticker": ticker, "rank": rank, "score": _number(score), "reference_close": _number(close)}
-            for day, ticker, rank, score, close in recommendations
+            {"scope": "事件影子" if mode == "SHADOW" else "生产基线", "target_date": str(day), "ticker": ticker, "rank": rank, "score": _number(score), "reference_close": _number(close)}
+            for day, ticker, rank, score, close, mode in recommendations
         ],
         "exit_rules": {"stop_loss": -0.10, "take_profit_gate": 0.15, "trailing_drawdown": 0.05, "max_holding_days": 60},
     }
