@@ -16,7 +16,7 @@ from quant_core.models import FeeModel
 from quant_core.portfolio import PortfolioPolicy
 from quant_core.risk import ExitRule
 from quant_core.settlement import SettlementService
-from quant_core.strategy_research import baseline_strategy_spec
+from quant_core.strategy_research import baseline_strategy_spec, momentum_volume_strategy_spec, pure_momentum_strategy_spec
 from quant_core.universe import UniverseService
 
 
@@ -32,6 +32,8 @@ def main() -> None:
     parser.add_argument("--initial-cash", default="1000000")
     parser.add_argument("--volume-multiple", default="1.0")
     parser.add_argument("--top-n", type=int, default=5)
+    parser.add_argument("--strategy", choices=("baseline", "pure_momentum", "momentum_volume"), default="baseline")
+    parser.add_argument("--momentum-weight", default="0.7")
     parser.add_argument("--portfolio-method", choices=("fixed_shares", "equal_weight"), default="fixed_shares")
     parser.add_argument("--shares-per-order", type=int, default=100)
     parser.add_argument("--max-positions", type=int)
@@ -46,7 +48,11 @@ def main() -> None:
               else PortfolioPolicy.equal_weight(args.max_positions or args.top_n, reserve))
     fee = FeeModel("cost_a_share_2026_v1", Decimal("0.00025"), Decimal("5"), Decimal("0.0005"), Decimal("0.00001"), Decimal("0.001"))
     initial_cash = Decimal(args.initial_cash)
-    strategy = baseline_strategy_spec(volume_multiple, args.top_n)
+    strategy = ({
+        "baseline": lambda: baseline_strategy_spec(volume_multiple, args.top_n),
+        "pure_momentum": lambda: pure_momentum_strategy_spec(args.top_n),
+        "momentum_volume": lambda: momentum_volume_strategy_spec(args.top_n, Decimal(args.momentum_weight)),
+    }[args.strategy])()
     rule = ExitRule()
     connection = duckdb.connect(args.db)
     try:
