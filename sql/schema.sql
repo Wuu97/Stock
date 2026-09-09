@@ -275,6 +275,21 @@ CREATE TABLE IF NOT EXISTS performance_evaluations (
     UNIQUE (recommendation_item_id, evaluation_version)
 );
 
+CREATE TABLE IF NOT EXISTS strategy_experiments (
+    experiment_id VARCHAR PRIMARY KEY,
+    account_id VARCHAR NOT NULL REFERENCES sim_accounts(account_id),
+    spec_json VARCHAR NOT NULL,
+    spec_sha256 VARCHAR NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS strategy_experiment_results (
+    experiment_id VARCHAR PRIMARY KEY REFERENCES strategy_experiments(experiment_id),
+    metrics_json VARCHAR NOT NULL,
+    metrics_sha256 VARCHAR NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS news_documents (
     document_id VARCHAR PRIMARY KEY,
     source_channel VARCHAR NOT NULL,
