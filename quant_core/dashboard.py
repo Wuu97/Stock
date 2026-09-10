@@ -132,6 +132,19 @@ def load_news_monitor(connection, limit: int = 50) -> dict:
             "industry_code": code, "industry_name": name, "direction": direction, "score": _number(score),
             "duration_days": duration, "uncertainty": uncertainty,
         })
+    clusters = connection.execute(
+        "SELECT c.event_cluster_id, c.algorithm_version, c.earliest_published_at, c.latest_published_at, "
+        "COUNT(m.document_id), SUM(CASE WHEN m.membership_role = 'REPRESENTATIVE' THEN 1 ELSE 0 END), "
+        "SUM(CASE WHEN m.membership_role IN ('DUPLICATE', 'SYNDICATED') THEN 1 ELSE 0 END) "
+        "FROM news_event_clusters c LEFT JOIN news_event_cluster_members m ON m.event_cluster_id = c.event_cluster_id "
+        "GROUP BY 1, 2, 3, 4 ORDER BY c.latest_published_at DESC LIMIT ?", [limit]
+    ).fetchall()
+    cluster_hypotheses = connection.execute(
+        "SELECT event_cluster_id, hypothesis_id FROM macro_event_hypothesis_clusters"
+    ).fetchall()
+    hypotheses_by_cluster = {}
+    for cluster_id, hypothesis_id in cluster_hypotheses:
+        hypotheses_by_cluster.setdefault(cluster_id, []).append(hypothesis_id)
     return {
         "documents": [{"id": doc_id, "source": source, "published_at": str(published), "received_at": str(received),
                        "headline": headline, "url": url, "artifact_sha256": artifact}
@@ -143,6 +156,11 @@ def load_news_monitor(connection, limit: int = 50) -> dict:
                          "domain_count": domain_count, "status": status, "rejection_reason": reason,
                          "impacts": impacts_by_hypothesis.get(hyp_id, [])}
                         for hyp_id, as_of, quality, domain_count, status, reason in hypotheses],
+        "clusters": [{"id": cluster_id, "algorithm": algorithm, "earliest_published_at": str(earliest),
+                      "latest_published_at": str(latest), "document_count": document_count,
+                      "representative_count": representative_count, "excluded_count": excluded_count,
+                      "hypothesis_ids": hypotheses_by_cluster.get(cluster_id, [])}
+                     for cluster_id, algorithm, earliest, latest, document_count, representative_count, excluded_count in clusters],
     }
 
 

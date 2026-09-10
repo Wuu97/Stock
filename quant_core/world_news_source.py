@@ -46,7 +46,9 @@ def gdelt_articles(query: str, received_at: datetime, max_records: int = 50) -> 
     if not isinstance(articles, list):
         raise RuntimeError("GDELT response is missing articles")
     return tuple(NewsDocument("gdelt_doc_2", "MACRO", _parse_news_time(item["seendate"]), received_at,
-                              str(item["title"]), str(item["title"]), external_id=str(item["url"]), source_url=str(item["url"]))
+                              str(item["title"]), str(item["title"]), external_id=str(item["url"]), source_url=str(item["url"]),
+                              publisher=_publisher(item["url"]), source_type="AGGREGATOR", canonical_url=str(item["url"]),
+                              evidence_role="DISCOVERY_ONLY")
                  for item in articles if item.get("title") and item.get("url") and item.get("seendate"))
 
 
@@ -86,7 +88,9 @@ def _gdelt_result(payload, received_at, request_key, cache_path, attempts) -> Gd
     articles = payload.get("articles", [])
     documents = tuple(NewsDocument("gdelt_doc_2", "MACRO", _parse_news_time(item["seendate"]), received_at,
                                    str(item["title"]), str(item["title"]), external_id=str(item["url"]),
-                                   source_url=str(item["url"]), raw_artifact_path=str(cache_path), raw_artifact_sha256=artifact_hash)
+                                   source_url=str(item["url"]), raw_artifact_path=str(cache_path), raw_artifact_sha256=artifact_hash,
+                                   publisher=_publisher(item["url"]), source_type="AGGREGATOR", canonical_url=str(item["url"]),
+                                   evidence_role="DISCOVERY_ONLY")
                       for item in articles if item.get("title") and item.get("url") and item.get("seendate"))
     return GdeltFetch(documents, request_key, str(cache_path), artifact_hash, attempts)
 
@@ -164,7 +168,9 @@ def _rss_documents(root, feed_url: str, source_channel: str, received_at: dateti
         external_id = _xml_text(entry, "guid") or _xml_text(entry, "id") or link
         yield NewsDocument(source_channel, "MACRO", published_at, received_at, title, body,
                            external_id=external_id, source_url=link, raw_artifact_path=str(artifact_path),
-                           raw_artifact_sha256=artifact_hash)
+                           raw_artifact_sha256=artifact_hash, publisher=_publisher(feed_url),
+                           source_type="OFFICIAL_INSTITUTION", canonical_url=link, language="en",
+                           evidence_role="EVIDENCE_ELIGIBLE")
 
 
 def _xml_text(entry, name: str) -> Optional[str]:
@@ -200,3 +206,8 @@ def _get_bytes(url: str) -> bytes:
         raise RuntimeError(f"native RSS source returned HTTP {error.code}") from error
     except Exception as error:
         raise RuntimeError("native RSS source request failed") from error
+
+
+def _publisher(source_url: str) -> str:
+    from urllib.parse import urlparse
+    return urlparse(source_url).hostname or source_url

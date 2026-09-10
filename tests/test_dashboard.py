@@ -6,6 +6,7 @@ import duckdb
 
 from quant_core.dashboard import load_activity, load_dashboard, load_news_monitor
 from quant_core.news import NewsArchive, NewsDocument
+from quant_core.news_clustering import cluster_documents
 from quant_core.models import FeeModel, OrderIntent
 from quant_core.settlement import SettlementService
 from tests.test_risk import _bar
@@ -44,10 +45,12 @@ def test_news_monitor_returns_immutable_facts_and_request_audit():
     connection.execute(Path("sql/schema.sql").read_text())
     now = datetime(2026, 9, 8, tzinfo=timezone.utc)
     archive = NewsArchive(connection)
-    archive.store_document(NewsDocument("official_fixture", "MACRO", now, now, "事件", "事件正文",
-                                        source_url="https://example.gov/news", raw_artifact_sha256="a" * 64), now)
+    document_id = archive.store_document(NewsDocument("official_fixture", "MACRO", now, now, "事件", "事件正文",
+                                                       source_url="https://example.gov/news", raw_artifact_sha256="a" * 64), now)
     archive.record_request("official_fixture", "b" * 64, now, 1, False, 200)
+    cluster_documents(connection, [document_id], now)
     monitor = load_news_monitor(connection)
     assert monitor["documents"][0]["source"] == "official_fixture"
     assert monitor["documents"][0]["artifact_sha256"] == "a" * 64
     assert monitor["requests"][0]["status"] == 200
+    assert monitor["clusters"][0]["representative_count"] == 1

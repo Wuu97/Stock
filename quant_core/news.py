@@ -25,12 +25,19 @@ class NewsDocument:
     source_url: Optional[str] = None
     raw_artifact_path: Optional[str] = None
     raw_artifact_sha256: Optional[str] = None
+    publisher: Optional[str] = None
+    source_type: Optional[str] = None
+    canonical_url: Optional[str] = None
+    language: Optional[str] = None
+    evidence_role: str = "EVIDENCE_ELIGIBLE"
 
     def __post_init__(self) -> None:
         if self.scope not in {"STOCK", "INDUSTRY", "MACRO"} or not self.headline.strip() or not self.body.strip():
             raise ValueError("news document scope, headline and body are required")
         if self.published_at.tzinfo is None or self.received_at.tzinfo is None:
             raise ValueError("news timestamps must include a timezone")
+        if self.evidence_role not in {"DISCOVERY_ONLY", "EVIDENCE_ELIGIBLE"}:
+            raise ValueError("news evidence_role is invalid")
 
     @property
     def content_sha256(self) -> str:
@@ -97,10 +104,12 @@ class NewsArchive:
         if existing:
             return existing[0]
         document_id = str(uuid4())
-        self.connection.execute("INSERT INTO news_documents (document_id, source_channel, external_id, scope, ticker, published_at, received_at, headline, body, source_url, content_sha256, raw_artifact_path, raw_artifact_sha256, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
+        self.connection.execute("INSERT INTO news_documents (document_id, source_channel, external_id, scope, ticker, published_at, received_at, headline, body, source_url, content_sha256, raw_artifact_path, raw_artifact_sha256, publisher, source_type, canonical_url, language, evidence_role, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
             document_id, document.source_channel, document.external_id, document.scope, document.ticker,
             document.published_at, document.received_at, document.headline, document.body, document.source_url,
-            document.content_sha256, document.raw_artifact_path, document.raw_artifact_sha256, created_at,
+            document.content_sha256, document.raw_artifact_path, document.raw_artifact_sha256, document.publisher,
+            document.source_type, document.canonical_url or document.source_url, document.language,
+            document.evidence_role, created_at,
         ])
         return document_id
 

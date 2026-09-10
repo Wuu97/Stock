@@ -35,5 +35,6 @@ def test_event_overlay_is_shadow_re_rank_with_explainable_components():
         Recommendation("600000.SH", 2, Decimal("0.05"), Decimal("10"), {}),
     ]
     picks = augment_recommendations(candidates, adjustments, Decimal("0.5"), 2)
-    assert [item.ticker for item in picks] == ["600000.SH", "600001.SH"]
-    assert Decimal(picks[0].reasons["event_score"]) == Decimal("0.30")
+    assert [item.ticker for item in picks] == ["600001.SH", "600000.SH"]
+    assert Decimal(picks[1].reasons["raw_event_score"]) == Decimal("0.30")
+    assert Decimal(picks[1].reasons["base_percentile"]) == Decimal("0")

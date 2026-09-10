@@ -335,8 +335,34 @@ CREATE TABLE IF NOT EXISTS news_documents (
     content_sha256 VARCHAR NOT NULL,
     raw_artifact_path VARCHAR,
     raw_artifact_sha256 VARCHAR,
+    publisher VARCHAR,
+    source_type VARCHAR,
+    canonical_url VARCHAR,
+    language VARCHAR,
+    evidence_role VARCHAR NOT NULL DEFAULT 'EVIDENCE_ELIGIBLE' CHECK (evidence_role IN ('DISCOVERY_ONLY', 'EVIDENCE_ELIGIBLE')),
     created_at TIMESTAMPTZ NOT NULL,
     UNIQUE (source_channel, content_sha256)
+);
+
+-- Event clusters are deterministic evidence containers, not LLM-generated facts.
+CREATE TABLE IF NOT EXISTS news_event_clusters (
+    event_cluster_id VARCHAR PRIMARY KEY,
+    cluster_key_sha256 VARCHAR NOT NULL UNIQUE,
+    algorithm_version VARCHAR NOT NULL,
+    earliest_published_at TIMESTAMPTZ NOT NULL,
+    latest_published_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS news_event_cluster_members (
+    event_cluster_id VARCHAR NOT NULL REFERENCES news_event_clusters(event_cluster_id),
+    document_id VARCHAR NOT NULL REFERENCES news_documents(document_id),
+    membership_role VARCHAR NOT NULL CHECK (membership_role IN ('REPRESENTATIVE', 'DUPLICATE', 'SYNDICATED', 'SUPPORTING')),
+    canonical_source_key VARCHAR NOT NULL,
+    similarity_score DECIMAL(12,8) NOT NULL,
+    selection_reason VARCHAR NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (event_cluster_id, document_id)
 );
 
 CREATE TABLE IF NOT EXISTS external_request_audit (
@@ -401,6 +427,12 @@ CREATE TABLE IF NOT EXISTS macro_event_evidence (
     hypothesis_id VARCHAR NOT NULL REFERENCES macro_event_hypotheses(hypothesis_id),
     document_id VARCHAR NOT NULL REFERENCES news_documents(document_id),
     PRIMARY KEY (hypothesis_id, document_id)
+);
+
+CREATE TABLE IF NOT EXISTS macro_event_hypothesis_clusters (
+    hypothesis_id VARCHAR NOT NULL REFERENCES macro_event_hypotheses(hypothesis_id),
+    event_cluster_id VARCHAR NOT NULL REFERENCES news_event_clusters(event_cluster_id),
+    PRIMARY KEY (hypothesis_id, event_cluster_id)
 );
 
 CREATE TABLE IF NOT EXISTS macro_event_impacts (

@@ -20,8 +20,8 @@ def _connection():
     connection = duckdb.connect(":memory:")
     connection.execute(Path("sql/schema.sql").read_text())
     now = datetime(2026, 9, 8, 8, tzinfo=timezone.utc)
-    connection.execute("INSERT INTO news_documents VALUES ('one', 'fixture', NULL, 'MACRO', NULL, ?, ?, 'one', 'one', 'https://one.test', 'a', NULL, NULL, ?)", [now, now, now])
-    connection.execute("INSERT INTO news_documents VALUES ('two', 'fixture', NULL, 'MACRO', NULL, ?, ?, 'two', 'two', 'https://two.test', 'b', NULL, NULL, ?)", [now, now, now])
+    connection.execute("INSERT INTO news_documents (document_id, source_channel, scope, published_at, received_at, headline, body, source_url, content_sha256, evidence_role, created_at) VALUES ('one', 'fixture', 'MACRO', ?, ?, 'one', 'one', 'https://one.test', 'a', 'EVIDENCE_ELIGIBLE', ?)", [now, now, now])
+    connection.execute("INSERT INTO news_documents (document_id, source_channel, scope, published_at, received_at, headline, body, source_url, content_sha256, evidence_role, created_at) VALUES ('two', 'fixture', 'MACRO', ?, ?, 'two', 'two', 'https://two.test', 'b', 'EVIDENCE_ELIGIBLE', ?)", [now, now, now])
     connection.execute("INSERT INTO sw_industry_taxonomy VALUES ('sw_2026_v1', '220202', '稀有金属', 3)")
     return connection, now
 

@@ -53,19 +53,34 @@ def active_event_adjustments(connection, taxonomy_version: str, as_of_date: date
 
 def augment_recommendations(recommendations: Iterable[Recommendation], adjustments: Mapping[str, EventAdjustment],
                             event_weight: Decimal, top_n: int) -> Tuple[Recommendation, ...]:
-    """Re-rank baseline candidates while preserving their base score and explanation."""
+    """Combine percentile-normalized baseline rank with a bounded event overlay."""
     if not Decimal("0") <= event_weight <= Decimal("1") or top_n <= 0:
         raise ValueError("event_weight must be between zero and one and top_n must be positive")
+    candidates = tuple(recommendations)
+    percentiles = _percentile_scores(candidates)
     scored = []
-    for item in recommendations:
+    for item in candidates:
         adjustment = adjustments.get(item.ticker, EventAdjustment(Decimal("0"), (), ()))
-        base_score = Decimal(str(item.score))
-        final_score = base_score + event_weight * adjustment.score
+        raw_score = Decimal(str(item.score))
+        base_score = percentiles[item.ticker]
+        event_score = max(Decimal("-1"), min(Decimal("1"), adjustment.score / MAX_TOTAL_ABS_SCORE))
+        final_score = base_score + event_weight * event_score
         reasons = dict(item.reasons)
-        reasons.update({"base_score": str(base_score), "event_score": str(adjustment.score),
-                        "event_weight": str(event_weight), "event_industry_codes": adjustment.industry_codes,
+        reasons.update({"raw_strategy_score": str(raw_score), "base_percentile": str(base_score),
+                        "raw_event_score": str(adjustment.score), "event_normalized_score": str(event_score),
+                        "event_weight": str(event_weight), "final_normalized_score": str(final_score),
+                        "event_industry_codes": adjustment.industry_codes,
                         "event_hypothesis_ids": adjustment.hypothesis_ids})
         scored.append((item.ticker, final_score, item.close, reasons))
     ranked = sorted(scored, key=lambda item: (item[1], item[0]), reverse=True)[:top_n]
     return tuple(Recommendation(ticker, index, score, close, reasons)
                  for index, (ticker, score, close, reasons) in enumerate(ranked, start=1))
+
+
+def _percentile_scores(recommendations: Iterable[Recommendation]) -> Mapping[str, Decimal]:
+    rows = tuple(recommendations)
+    if len(rows) == 1:
+        return {rows[0].ticker: Decimal("1")}
+    ordered = sorted(rows, key=lambda item: (Decimal(str(item.score)), item.ticker))
+    denominator = Decimal(len(ordered) - 1)
+    return {item.ticker: Decimal(index) / denominator for index, item in enumerate(ordered)}

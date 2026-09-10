@@ -59,7 +59,8 @@ def stock_news(symbol: str, received_at: datetime) -> tuple[NewsDocument, ...]:
         published_at = _parse_news_time(row["发布时间"], received_at)
         documents.append(NewsDocument("akshare_stock_news_em", "STOCK", published_at, received_at,
                                       str(row["新闻标题"]), str(row["新闻内容"]), symbol,
-                                      str(index), str(row["新闻链接"])))
+                                      str(index), str(row["新闻链接"]), publisher="eastmoney.com",
+                                      source_type="FINANCIAL_MEDIA", canonical_url=str(row["新闻链接"]), language="zh"))
     return tuple(documents)
 
 
@@ -76,7 +77,9 @@ def stock_announcements(notice_date: str, received_at: datetime) -> tuple[NewsDo
     url_column = "公告链接" if "公告链接" in frame.columns else "网址" if "网址" in frame.columns else None
     return tuple(NewsDocument("akshare_stock_notice_report", "STOCK", _parse_news_time(row["公告日期"], received_at), received_at,
                               str(row["公告标题"]), str(row["公告标题"]), _ticker_from_code(str(row["代码"])),
-                              str(index), str(row[url_column]) if url_column else None) for index, row in frame.iterrows())
+                              str(index), str(row[url_column]) if url_column else None, publisher="eastmoney.com",
+                              source_type="OFFICIAL_DISCLOSURE", canonical_url=str(row[url_column]) if url_column else None,
+                              language="zh") for index, row in frame.iterrows())
 
 
 def cls_flash_news(received_at: datetime) -> tuple[NewsDocument, ...]:
@@ -90,7 +93,8 @@ def cls_flash_news(received_at: datetime) -> tuple[NewsDocument, ...]:
     if not required.issubset(frame.columns):
         raise RuntimeError("AKShare Cailianpress response is missing required fields")
     return tuple(NewsDocument("akshare_cls_flash", "MACRO", _parse_news_time(row["发布时间"], received_at), received_at,
-                              str(row.get("标题") or row["内容"])[:200], str(row["内容"]), external_id=str(index))
+                              str(row.get("标题") or row["内容"])[:200], str(row["内容"]), external_id=str(index),
+                              publisher="cls.cn", source_type="FINANCIAL_MEDIA", language="zh")
                  for index, row in frame.iterrows())
 
 

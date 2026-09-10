@@ -196,6 +196,14 @@ def main() -> None:
                                       for item in hypothesis["impacts"]], hide_index=True, width="stretch")
         else:
             _empty("尚无已生成的事件假设；先归档新闻并运行事件推理。")
+        st.subheader("事件簇与独立证据")
+        if news["clusters"]:
+            st.dataframe([{"事件簇": row["id"][:12], "最近事件时间": row["latest_published_at"],
+                           "文档数": row["document_count"], "独立代表": row["representative_count"],
+                           "去重/转载": row["excluded_count"], "关联假设": ", ".join(item[:8] for item in row["hypothesis_ids"]) or "—"}
+                          for row in news["clusters"]], hide_index=True, width="stretch")
+        else:
+            _empty("尚未形成事件簇；下一次合格宏观证据分析时会自动创建。")
         st.subheader("最近归档新闻")
         if news["documents"]:
             st.dataframe(_news_rows(news["documents"]), hide_index=True, width="stretch")
