@@ -40,11 +40,11 @@ def evaluate_execution(entry_price: Decimal, execution_date: date, bars: Iterabl
         excess[horizon] = None if not benchmark_bar or not execution_benchmark else result - (
             (benchmark_bar.close / execution_benchmark.open) - Decimal("1")
         )
-    max_drawdown = _max_close_drawdown([entry_price] + closing_path) if closing_path else None
+    max_drawdown = max_close_drawdown([entry_price] + closing_path) if closing_path else None
     return EvaluationResult(returns, excess, max_drawdown)
 
 
-def _max_close_drawdown(prices: Sequence[Decimal]) -> Decimal:
+def max_close_drawdown(prices: Sequence[Decimal]) -> Decimal:
     peak = prices[0]
     worst = Decimal("0")
     for price in prices:

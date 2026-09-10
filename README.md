@@ -39,11 +39,11 @@ python scripts/evaluate_shadow_tracks.py \
 
 本地日线 CSV 需要字段：`trade_date,ticker,open,high,low,close,volume,amount,limit_up,limit_down,status`。
 
-命令顺序：`init_db.py` → `ingest_daily.py` → `run_daily_strategy.py` → `evaluate_run.py`。所有时间参数必须包含时区。
+生产日流程由 `daily_pipeline.py` 协调，其中涨跌停 enrich 使用 immutable snapshot 入口 `enrich_snapshot_with_tushare_limits.py`。`evaluate_run.py` 保留用于传统、单个 recommendation run 的实际成交评估；production/shadow 的可比评估使用上方的 `evaluate_shadow_tracks.py`。所有时间参数必须包含时区。
 
 真实免费历史日线可先使用 `download_baostock_daily.py` 生成 CSV，再走同一导入链路。该适配器使用不复权日线，且不会伪造涨跌停价；因此它可用于研究与推荐，不能单独作为模拟撮合价格限制的数据来源。
 
-使用 Tushare 的 2000 积分 `stk_limit` 后，可运行 `enrich_with_tushare_limits.py` 生成一份带历史涨跌停价的新 CSV。将 `.env.example` 复制为 `.env` 并填写 `TUSHARE_TOKEN`；`.env` 已被 Git 忽略，且系统环境变量优先于文件。对严格撮合的标的使用 `--require-tickers 600000.SH,000001.SZ` 校验每日边界完整性。
+`enrich_with_tushare_limits.py` 仅用于研究或 CSV import workflow：它生成一份带历史涨跌停价的新 CSV，不是 daily/production snapshot 的正式入口。正式日流程使用 `enrich_snapshot_with_tushare_limits.py`，以 immutable market snapshot、原始响应哈希和 manifest 保存来源链路。将 `.env.example` 复制为 `.env` 并填写 `TUSHARE_TOKEN`；`.env` 已被 Git 忽略，且系统环境变量优先于文件。对严格撮合的 CSV 标的可使用 `--require-tickers 600000.SH,000001.SZ` 校验每日边界完整性。
 
 动态监控池可用 `snapshot_current_market_cap.py` 获取当前总市值快照，再用 `build_dynamic_universe.py` 以本地日线构建冻结名单；每个名单都保存分组名称、完整筛选参数、当前市值快照与成分股。例如：`--group-name large_cap_momentum --min-total-market-cap 80000000000 --momentum-days 30 --top-n 50`。最后在 `run_daily_strategy.py` 中传入对应的 `--universe-snapshot-id`。当前市值快照仅用于当日监控池，不用于历史回测。
 

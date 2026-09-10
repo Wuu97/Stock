@@ -3,9 +3,10 @@
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Iterable, Mapping, Sequence, Tuple
+from typing import Iterable, Mapping, Optional, Sequence, Tuple
 
 from .models import DayBar
+from .trading_status import TradingStatusEvent
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,54 @@ def fetch_daily_limit_records(token: str, trade_dates: Sequence[date]) -> Tuple[
 def fetch_daily_limits(token: str, trade_dates: Sequence[date]) -> Tuple[DailyLimit, ...]:
     """Fetch one full-market Tushare limit-price snapshot per requested date."""
     return tuple(row_to_daily_limit(row) for row in fetch_daily_limit_records(token, trade_dates))
+
+
+def create_tushare_client(token: str):
+    """Create the authenticated Tushare client used by all vendor adapters."""
+    if not token:
+        raise ValueError("Tushare token cannot be empty")
+    try:
+        import tushare as ts
+    except ImportError as error:
+        raise RuntimeError("install the data extra: pip install '.[data]'") from error
+    return ts.pro_api(token)
+
+
+def row_to_trading_status_event(row: Mapping[str, object]) -> TradingStatusEvent:
+    """Normalize one authoritative ``suspend_d`` row into a domain event."""
+    status = {"S": "SUSPENDED", "R": "RESUMED"}.get(str(row.get("suspend_type", "")))
+    if status is None:
+        raise ValueError("Tushare suspend_d returned an unknown suspend_type")
+    raw_date = str(row["trade_date"])
+    trade_date = date.fromisoformat(raw_date if "-" in raw_date else f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}")
+    return TradingStatusEvent(str(row["ts_code"]), trade_date, status, row.get("suspend_timing") or None)
+
+
+def fetch_trading_status_rows(client, start: date, end: date, ticker: Optional[str] = None) -> Tuple[Mapping[str, object], ...]:
+    """Fetch one precise Tushare suspension/resumption request."""
+    query = {"start_date": start.strftime("%Y%m%d"), "end_date": end.strftime("%Y%m%d")}
+    if ticker:
+        query["ts_code"] = ticker
+    else:
+        query = {"trade_date": start.strftime("%Y%m%d")}
+    return tuple(client.suspend_d(fields="ts_code,trade_date,suspend_timing,suspend_type", **query).to_dict("records"))
+
+
+def iter_trading_status_pages(client, start: date, end: date, page_size: int):
+    """Yield full-market ``suspend_d`` result pages without losing page boundaries."""
+    if page_size <= 0:
+        raise ValueError("page_size must be positive")
+    offset = 0
+    while True:
+        frame = client.query("suspend_d", start_date=start.strftime("%Y%m%d"), end_date=end.strftime("%Y%m%d"),
+                             fields="ts_code,trade_date,suspend_timing,suspend_type", offset=offset, limit=page_size)
+        rows = tuple(frame.to_dict("records"))
+        if not rows:
+            return
+        yield offset, rows
+        if len(rows) < page_size:
+            return
+        offset += page_size
 
 
 def merge_daily_limits(bars: Iterable[DayBar], limits: Iterable[DailyLimit]) -> Tuple[DayBar, ...]:

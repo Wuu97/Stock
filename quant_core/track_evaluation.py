@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Iterable, Mapping, Optional, Sequence
 from uuid import uuid4
 
-from .evaluation import EvaluationResult, HORIZONS, _max_close_drawdown, summarize
+from .evaluation import EvaluationResult, HORIZONS, max_close_drawdown, summarize
 from .matching import match_next_open
 from .models import DayBar, FeeModel, OrderIntent
 
@@ -86,7 +86,7 @@ def _evaluate_item(item_id: str, ticker: str, trade_date, entry_bar: Optional[Da
         returns[horizon] = _sell_cash(target.close, shares, fee) / entry_cash - Decimal("1")
         benchmark_entry, benchmark_exit = benchmark_by_date.get(trade_date), benchmark_by_date.get(target.trade_date)
         excess[horizon] = None if not benchmark_entry or not benchmark_exit else returns[horizon] - (benchmark_exit.close / benchmark_entry.open - Decimal("1"))
-    return EvaluationResult(returns, excess, _max_close_drawdown(path) if len(path) > 1 else None), execution, None
+    return EvaluationResult(returns, excess, max_close_drawdown(path) if len(path) > 1 else None), execution, None
 
 
 def _sell_cash(price: Decimal, shares: int, fee: FeeModel) -> Decimal:
