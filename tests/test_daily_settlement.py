@@ -4,8 +4,8 @@ from pathlib import Path
 
 import duckdb
 
-from quant_core.daily_settlement import settle_frozen_buys
-from quant_core.models import DayBar, FeeModel
+from quant_core.daily_settlement import settle_frozen_buys, settle_pending_sells
+from quant_core.models import DayBar, FeeModel, OrderIntent
 from quant_core.market_data import MarketDataStore
 from quant_core.settlement import SettlementService
 
@@ -48,3 +48,23 @@ def test_daily_settlement_never_executes_a_shadow_recommendation_run():
     SettlementService(con).create_account("acct", "test", Decimal("10000"), date(2024, 3, 1))
     outcomes = settle_frozen_buys(con, "acct", "market", date(2024, 3, 4), date(2024, 3, 5), 100, FEE)
     assert outcomes == ()
+
+
+def test_daily_settlement_executes_due_risk_sell_without_a_recommendation():
+    con = duckdb.connect(":memory:")
+    con.execute(Path("sql/schema.sql").read_text())
+    now = datetime.now(timezone.utc)
+    trade_date = date(2024, 3, 5)
+    con.execute("INSERT INTO market_data_snapshots VALUES ('market', ?, 'fixture', ?, ?, 'path', 'hash', ?)", [trade_date, now, now, now])
+    sell_bar = DayBar(trade_date, "600000.SH", Decimal("11"), Decimal("11.5"), Decimal("10.5"),
+                       Decimal("11.2"), 1000, Decimal("10000"), Decimal("12.1"), Decimal("9.9"))
+    MarketDataStore(con).store_bars("market", [sell_bar])
+    service = SettlementService(con)
+    service.create_account("acct", "test", Decimal("10000"), date(2024, 3, 1))
+    buy = OrderIntent("buy", "acct", "600000.SH", date(2024, 3, 1), "BUY", 100)
+    service.create_intent(buy)
+    service.settle(buy, _bar(date(2024, 3, 1), "600000.SH"), trade_date, FEE)
+    service.create_intent(OrderIntent("sell", "acct", "600000.SH", trade_date, "SELL", 100))
+    outcomes = settle_pending_sells(con, "acct", "market", trade_date, date(2024, 3, 6), FEE)
+    assert outcomes[0].status == "FILLED"
+    assert con.execute("SELECT direction FROM sim_executions WHERE intent_id = 'sell'").fetchone()[0] == "SELL"

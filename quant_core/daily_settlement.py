@@ -60,6 +60,30 @@ def settle_frozen_buys(connection, account_id: str, market_snapshot_id: str, tra
     return tuple(outcomes)
 
 
+def settle_pending_sells(connection, account_id: str, market_snapshot_id: str, trade_date: date,
+                         next_trading_date: date, fee: FeeModel) -> Tuple[SettlementBatchItem, ...]:
+    """Settle due risk sell intents through the same matching and ledger service."""
+    if next_trading_date <= trade_date:
+        raise ValueError("next_trading_date must be after trade_date")
+    rows = connection.execute(
+        "SELECT intent_id, ticker, target_shares FROM sim_order_intents "
+        "WHERE account_id = ? AND target_trade_date = ? AND direction = 'SELL' "
+        "AND order_status = 'PENDING' ORDER BY intent_id",
+        [account_id, trade_date],
+    ).fetchall()
+    bars = _bars_for_trade_date(connection, market_snapshot_id, trade_date)
+    service, outcomes = SettlementService(connection), []
+    for intent_id, ticker, shares in rows:
+        bar = bars.get(ticker)
+        if bar is None:
+            outcomes.append(SettlementBatchItem(intent_id, ticker, "SKIPPED", "DATA_MISSING_BAR"))
+            continue
+        status = service.settle(OrderIntent(intent_id, account_id, ticker, trade_date, "SELL", shares),
+                                bar, next_trading_date, fee)
+        outcomes.append(SettlementBatchItem(intent_id, ticker, status))
+    return tuple(outcomes)
+
+
 def _bars_for_trade_date(connection, market_snapshot_id: str, trade_date: date) -> Dict[str, DayBar]:
     rows = connection.execute(
         "SELECT trade_date, ticker, open, high, low, close, volume, amount, limit_up, limit_down, status "

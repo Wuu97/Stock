@@ -35,6 +35,8 @@ def main() -> None:
     parser.add_argument("--momentum-days", type=int, default=30)
     parser.add_argument("--top-n", type=int, default=50)
     parser.add_argument("--benchmark-ticker", default="000300.SH")
+    parser.add_argument("--include-ticker", action="append", default=[],
+                        help="Also retain held or pending symbols needed for settlement and valuation.")
     parser.add_argument("--artifact-dir", default="data/daily_refresh")
     args = parser.parse_args()
     trade_date = date.fromisoformat(args.trade_date)
@@ -54,10 +56,11 @@ def main() -> None:
     days = sorted(calendar["cal_date"].tolist())[-(args.momentum_days + 1):]
     if len(days) < args.momentum_days + 1:
         raise RuntimeError("insufficient trading days for momentum window")
+    selected_tickers = set(caps) | set(args.include_ticker)
     records = []
     for day in days:
         frame = client.daily(trade_date=str(day), fields="ts_code,trade_date,open,high,low,close,vol,amount")
-        records.extend(row for row in frame.to_dict("records") if str(row["ts_code"]) in caps)
+        records.extend(row for row in frame.to_dict("records") if str(row["ts_code"]) in selected_tickers)
     benchmark = client.index_daily(ts_code=args.benchmark_ticker, start_date=str(days[0]), end_date=str(days[-1]),
                                    fields="ts_code,trade_date,open,high,low,close,vol,amount")
     benchmark_rows = benchmark.to_dict("records")
