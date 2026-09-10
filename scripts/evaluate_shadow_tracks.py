@@ -1,13 +1,13 @@
 """Evaluate paired production and shadow runs under the same daily execution model."""
 
 import argparse
-from decimal import Decimal
 import json
+from pathlib import Path
 
 import duckdb
 
 from quant_core.market_data import MarketDataStore
-from quant_core.models import FeeModel
+from quant_core.cost_models import load_cost_model
 from quant_core.track_evaluation import evaluate_tracks
 
 
@@ -37,16 +37,12 @@ def main() -> None:
     parser.add_argument("--benchmark-ticker", required=True)
     parser.add_argument("--evaluation-version", default="track_evaluation_v1")
     parser.add_argument("--shares", type=int, default=100)
-    parser.add_argument("--commission-rate", default="0.00025")
-    parser.add_argument("--min-commission", default="5")
-    parser.add_argument("--stamp-duty-rate", default="0.0005")
-    parser.add_argument("--transfer-fee-rate", default="0.00001")
-    parser.add_argument("--slippage-rate", default="0.001")
+    parser.add_argument("--cost-model-version", default="cost_a_share_2026_v1")
+    parser.add_argument("--cost-model-config", default="config/cost_models.yaml")
     args = parser.parse_args()
     if bool(args.run_id) == args.all_paired:
         parser.error("provide --run-id at least once, or use --all-paired")
-    fee = FeeModel("cost_a_share_2026_v1", Decimal(args.commission_rate), Decimal(args.min_commission),
-                   Decimal(args.stamp_duty_rate), Decimal(args.transfer_fee_rate), Decimal(args.slippage_rate))
+    fee = load_cost_model(args.cost_model_version, Path(args.cost_model_config))
     connection = duckdb.connect(args.db)
     try:
         run_ids = args.run_id or _paired_run_ids(connection)

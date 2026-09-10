@@ -5,6 +5,8 @@ from pathlib import Path
 import duckdb
 
 from scripts.daily_pipeline import _taxonomy_version, _tracked_tickers
+from quant_core.pipeline_audit import PipelineStore
+from quant_core.cost_models import load_cost_model
 
 
 def test_pipeline_tracks_pending_and_held_symbols_and_uses_latest_taxonomy():
@@ -25,3 +27,29 @@ def test_pipeline_tracks_pending_and_held_symbols_and_uses_latest_taxonomy():
     assert _tracked_tickers(connection, "acct") == ["000001.SZ", "600000.SH"]
     assert _taxonomy_version(connection, None) == "SW2021_V2"
     assert _taxonomy_version(connection, "PINNED") == "PINNED"
+
+
+def test_cost_model_loader_uses_the_versioned_project_config():
+    fee = load_cost_model("cost_a_share_2026_v1", Path("config/cost_models.yaml"))
+    assert fee.version == "cost_a_share_2026_v1"
+    assert fee.commission_rate == Decimal("0.00025")
+
+
+def test_pipeline_audit_reuses_successful_stage_and_records_non_blocking_failure(tmp_path):
+    db_path = tmp_path / "pipeline.duckdb"
+    connection = duckdb.connect(str(db_path))
+    connection.execute(Path("sql/schema.sql").read_text())
+    now = datetime.now(timezone.utc)
+    connection.execute("INSERT INTO sim_accounts VALUES ('acct', '账户', 'CNY', 10000, 'cash', 'fifo', 'ACTIVE', ?)", [now])
+    connection.close()
+    store = PipelineStore(str(db_path), tmp_path / "artifacts")
+    run_id, cutoff = store.start_or_resume(date(2026, 9, 10), "acct", {"group": "top50"}, now)
+    assert store.run_stage(run_id, "refresh", "BLOCKING", lambda: {"snapshot": "one"}) == {"snapshot": "one"}
+    assert store.run_stage(run_id, "refresh", "BLOCKING", lambda: (_ for _ in ()).throw(RuntimeError("must not rerun"))) == {"snapshot": "one"}
+    failure = store.run_stage(run_id, "news", "NON_BLOCKING", lambda: (_ for _ in ()).throw(RuntimeError("offline")))
+    assert failure["status"] == "NON_BLOCKING_FAILURE"
+    store.finish(run_id)
+    connection = duckdb.connect(str(db_path), read_only=True)
+    assert connection.execute("SELECT run_status FROM pipeline_runs WHERE pipeline_run_id = ?", [run_id]).fetchone()[0] == "COMPLETED_WITH_WARNINGS"
+    assert connection.execute("SELECT stage_status FROM pipeline_run_stages WHERE pipeline_run_id = ? AND stage_name = 'news'", [run_id]).fetchone()[0] == "FAILED"
+    connection.close()

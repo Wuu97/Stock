@@ -319,6 +319,32 @@ CREATE TABLE IF NOT EXISTS track_evaluation_details (
     PRIMARY KEY (recommendation_item_id, evaluation_version)
 );
 
+-- Resumable daily orchestration audit. One logical run exists per account and trade date.
+CREATE TABLE IF NOT EXISTS pipeline_runs (
+    pipeline_run_id VARCHAR PRIMARY KEY,
+    trade_date DATE NOT NULL,
+    account_id VARCHAR NOT NULL REFERENCES sim_accounts(account_id),
+    config_sha256 VARCHAR NOT NULL,
+    effective_as_of_timestamp TIMESTAMPTZ NOT NULL,
+    run_status VARCHAR NOT NULL CHECK (run_status IN ('RUNNING', 'COMPLETED', 'COMPLETED_WITH_WARNINGS', 'FAILED')),
+    started_at TIMESTAMPTZ NOT NULL,
+    completed_at TIMESTAMPTZ,
+    error_text VARCHAR,
+    UNIQUE (trade_date, account_id)
+);
+
+CREATE TABLE IF NOT EXISTS pipeline_run_stages (
+    pipeline_run_id VARCHAR NOT NULL REFERENCES pipeline_runs(pipeline_run_id),
+    stage_name VARCHAR NOT NULL,
+    execution_class VARCHAR NOT NULL CHECK (execution_class IN ('BLOCKING', 'NON_BLOCKING')),
+    stage_status VARCHAR NOT NULL CHECK (stage_status IN ('RUNNING', 'SUCCEEDED', 'FAILED')),
+    started_at TIMESTAMPTZ NOT NULL,
+    completed_at TIMESTAMPTZ,
+    error_text VARCHAR,
+    artifact_reference VARCHAR,
+    PRIMARY KEY (pipeline_run_id, stage_name)
+);
+
 CREATE TABLE IF NOT EXISTS strategy_experiments (
     experiment_id VARCHAR PRIMARY KEY,
     account_id VARCHAR NOT NULL REFERENCES sim_accounts(account_id),
