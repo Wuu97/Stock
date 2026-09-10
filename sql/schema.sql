@@ -325,6 +325,7 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     trade_date DATE NOT NULL,
     account_id VARCHAR NOT NULL REFERENCES sim_accounts(account_id),
     config_sha256 VARCHAR NOT NULL,
+    config_json VARCHAR NOT NULL,
     effective_as_of_timestamp TIMESTAMPTZ NOT NULL,
     run_status VARCHAR NOT NULL CHECK (run_status IN ('RUNNING', 'COMPLETED', 'COMPLETED_WITH_WARNINGS', 'FAILED')),
     started_at TIMESTAMPTZ NOT NULL,
@@ -343,6 +344,19 @@ CREATE TABLE IF NOT EXISTS pipeline_run_stages (
     error_text VARCHAR,
     artifact_reference VARCHAR,
     PRIMARY KEY (pipeline_run_id, stage_name)
+);
+
+CREATE TABLE IF NOT EXISTS pipeline_run_stage_attempts (
+    pipeline_run_id VARCHAR NOT NULL REFERENCES pipeline_runs(pipeline_run_id),
+    stage_name VARCHAR NOT NULL,
+    attempt_number INTEGER NOT NULL CHECK (attempt_number > 0),
+    execution_class VARCHAR NOT NULL CHECK (execution_class IN ('BLOCKING', 'NON_BLOCKING')),
+    stage_status VARCHAR NOT NULL CHECK (stage_status IN ('RUNNING', 'SUCCEEDED', 'FAILED')),
+    started_at TIMESTAMPTZ NOT NULL,
+    completed_at TIMESTAMPTZ,
+    error_text VARCHAR,
+    artifact_reference VARCHAR,
+    PRIMARY KEY (pipeline_run_id, stage_name, attempt_number)
 );
 
 CREATE TABLE IF NOT EXISTS strategy_experiments (

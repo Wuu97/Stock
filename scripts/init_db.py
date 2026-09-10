@@ -6,6 +6,7 @@ from pathlib import Path
 import duckdb
 
 from quant_core.news_migrations import apply_news_migrations
+from quant_core.pipeline_migrations import apply_pipeline_migrations
 
 
 def main() -> None:
@@ -15,6 +16,7 @@ def main() -> None:
     connection = duckdb.connect(args.db)
     connection.execute((Path(__file__).parents[1] / "sql" / "schema.sql").read_text())
     apply_news_migrations(connection)
+    apply_pipeline_migrations(connection)
     connection.close()
 
 

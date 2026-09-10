@@ -5,6 +5,7 @@ from dataclasses import asdict
 from datetime import date, datetime, timedelta
 import json
 import os
+from hashlib import sha256
 from pathlib import Path
 import subprocess
 import sys
@@ -98,13 +99,6 @@ def _settle(connection, account_id: str, snapshot_id: str, trade_date: date, nex
     return {"sells": [asdict(item) for item in sells], "buys": [asdict(item) for item in buys]}
 
 
-def _optional_stage(script: str, arguments: list[str]) -> dict:
-    try:
-        return {"status": "OK", "result": _run(script, arguments)}
-    except Exception as error:
-        return {"status": "NON_BLOCKING_FAILURE", "reason": str(error)}
-
-
 def _context(db_path: str, account_id: str, configured_taxonomy: Optional[str]) -> dict:
     connection = duckdb.connect(db_path)
     try:
@@ -131,11 +125,18 @@ def main() -> None:
     trade_date, next_date = _trade_dates(date.fromisoformat(args.trade_date))
     now = datetime.now(SHANGHAI)
     _run("init_db.py", ["--db", args.db])
+    fee = load_cost_model(args.cost_model_version, ROOT / args.cost_model_config)
+    run_config = {"arguments": vars(args), "cost_model": {"version": fee.version, "commission_rate": str(fee.commission_rate),
+                  "min_commission": str(fee.min_commission), "stamp_duty_rate": str(fee.stamp_duty_rate),
+                  "transfer_fee_rate": str(fee.transfer_fee_rate), "slippage_rate": str(fee.slippage_rate)},
+                  "cost_model_config_sha256": sha256((ROOT / args.cost_model_config).read_bytes()).hexdigest()}
     audit = PipelineStore(args.db, Path(args.report_dir) / "pipeline_runs")
-    run_id, effective_as_of = audit.start_or_resume(trade_date, args.account_id, vars(args), now)
+    run_id, effective_as_of, completed = audit.start_or_resume(trade_date, args.account_id, run_config, now)
+    if completed:
+        print(json.dumps({"pipeline_run_id": run_id, "status": "ALREADY_COMPLETED"}, ensure_ascii=False))
+        return
     context = audit.run_stage(run_id, "context", "BLOCKING", lambda: _context(args.db, args.account_id, args.taxonomy_version))
     taxonomy_version, tracked_tickers = context["taxonomy_version"], context["tracked_tickers"]
-    fee = load_cost_model(args.cost_model_version, ROOT / args.cost_model_config)
 
     refresh_args = ["--db", args.db, "--trade-date", trade_date.isoformat(), "--group-name", args.group_name]
     for ticker in tracked_tickers:
@@ -158,18 +159,18 @@ def main() -> None:
              "--next-trading-date", next_date.isoformat()]))
 
     def news_stage():
-        news = {"cls": _optional_stage("ingest_news.py", ["--db", args.db, "--source", "cls"])}
+        news = {"cls": _run("ingest_news.py", ["--db", args.db, "--source", "cls"])}
         for channel_url in args.rss_feed:
             channel, separator, url = channel_url.partition("=")
             if not separator or not channel or not url:
                 raise ValueError("--rss-feed must be CHANNEL=URL")
-            news[channel] = _optional_stage("ingest_news.py", ["--db", args.db, "--source", "rss", "--source-channel", channel,
+            news[channel] = _run("ingest_news.py", ["--db", args.db, "--source", "rss", "--source-channel", channel,
                                                                  "--feed-url", url])
         for query in args.gdelt_query:
-            news[f"gdelt:{query}"] = _optional_stage("ingest_news.py", ["--db", args.db, "--source", "gdelt", "--query", query])
+            news[f"gdelt:{query}"] = _run("ingest_news.py", ["--db", args.db, "--source", "gdelt", "--query", query])
         return news
     news = audit.run_stage(run_id, "news", "NON_BLOCKING", news_stage)
-    macro = audit.run_stage(run_id, "macro_hypothesis", "NON_BLOCKING", lambda: _optional_stage("derive_macro_hypothesis.py", ["--db", args.db, "--latest-hours", "24",
+    macro = audit.run_stage(run_id, "macro_hypothesis", "NON_BLOCKING", lambda: _run("derive_macro_hypothesis.py", ["--db", args.db, "--latest-hours", "24",
                              "--effective-as-of", effective_as_of.isoformat(), "--taxonomy-version", taxonomy_version,
                              "--official-domain", "news.un.org"]))
 
