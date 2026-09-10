@@ -22,11 +22,13 @@ class PipelineStore:
         connection = self._connection()
         try:
             row = connection.execute(
-            "SELECT pipeline_run_id, effective_as_of_timestamp, run_status FROM pipeline_runs WHERE trade_date = ? AND account_id = ?",
+            "SELECT pipeline_run_id, effective_as_of_timestamp, run_status, config_sha256 FROM pipeline_runs WHERE trade_date = ? AND account_id = ?",
             [trade_date, account_id],
             ).fetchone()
             if row:
-                run_id, cutoff, status = row
+                run_id, cutoff, status, stored_config_hash = row
+                if stored_config_hash != canonical_hash(config):
+                    raise ValueError("daily pipeline configuration differs from the existing run")
                 if status in {"COMPLETED", "COMPLETED_WITH_WARNINGS"}:
                     return run_id, cutoff
                 connection.execute("UPDATE pipeline_runs SET run_status = 'RUNNING', completed_at = NULL, error_text = NULL WHERE pipeline_run_id = ?", [run_id])
