@@ -21,6 +21,7 @@ def main() -> None:
     parser.add_argument("--db", required=True)
     parser.add_argument("--base-snapshot-id", required=True)
     parser.add_argument("--snapshot-id", required=True)
+    parser.add_argument("--exempt-ticker", action="append", default=[])
     parser.add_argument("--artifact-dir", default="data/tushare_snapshots")
     args = parser.parse_args()
 
@@ -32,8 +33,9 @@ def main() -> None:
     try:
         base_bars = MarketDataStore(connection).load_bars(args.base_snapshot_id)
         raw_rows = fetch_daily_limit_records(token, sorted({bar.trade_date for bar in base_bars}))
+        exempt = set(args.exempt_ticker)
         required_keys = {
-            (bar.trade_date.strftime("%Y%m%d"), bar.ticker) for bar in base_bars
+            (bar.trade_date.strftime("%Y%m%d"), bar.ticker) for bar in base_bars if bar.ticker not in exempt
         }
         relevant = [row for row in raw_rows if (str(row["trade_date"]), str(row["ts_code"])) in required_keys]
         limits = [DailyLimit(
@@ -41,7 +43,7 @@ def main() -> None:
             Decimal(str(row["up_limit"])), Decimal(str(row["down_limit"])),
         ) for row in relevant]
         enriched = merge_daily_limits(base_bars, limits)
-        missing = [bar for bar in enriched if bar.limit_up is None or bar.limit_down is None]
+        missing = [bar for bar in enriched if bar.ticker not in exempt and (bar.limit_up is None or bar.limit_down is None)]
         if missing:
             raise RuntimeError(f"Tushare limits missing for {len(missing)} selected daily bars")
 

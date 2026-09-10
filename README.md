@@ -21,7 +21,19 @@ python -m pip install -e .
 streamlit run scripts/streamlit_dashboard.py -- --db data/top50/quant.duckdb --account-id top50_forward_account
 ```
 
-打开 `http://127.0.0.1:8501` 即可查看 Overview、NAV、Positions、Recommendations、Risk 与 Activity。项目级 `.streamlit/config.toml` 已将服务限制为本机访问，并关闭 Streamlit 首次启动时的统计/邮件提示。
+打开 `http://127.0.0.1:8501` 即可查看总览、净值、持仓、推荐、风控、订单、新闻事件与影子评估。项目级 `.streamlit/config.toml` 已将服务限制为本机访问，并关闭 Streamlit 首次启动时的统计/邮件提示。
+
+事件影子与生产基线共用同一套日频开盘撮合和成本模型，但影子轨绝不创建账户订单。推荐后的完整 T+20 行情与沪深 300 基准数据到齐后，使用同一份已校验的行情快照运行评估：
+
+```bash
+python scripts/evaluate_shadow_tracks.py \
+  --db data/top50/quant.duckdb \
+  --all-paired \
+  --market-snapshot-id <包含推荐日到T+20日且已补齐涨跌停价的快照> \
+  --benchmark-ticker 000300.SH
+```
+
+未满 T+20 的推荐只会被报告为 `pending_maturity_count`，不会写入绩效表；因此看板只展示完整持有窗口的可比结果。
 
 `run_signal_study.py` 可在不含涨跌停价的免费历史 K 线上执行滚动信号研究：每个信号仅使用当日及之前的行情，输出 T+1/T+5/T+20 收盘方向统计。它不是成交回测，不能替代后续的严格模拟交易。
 

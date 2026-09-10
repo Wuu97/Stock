@@ -6,14 +6,15 @@ from pathlib import Path
 import duckdb
 import streamlit as st
 
-from quant_core.dashboard import load_activity, load_dashboard, load_news_monitor
+from quant_core.dashboard import load_activity, load_dashboard, load_news_monitor, load_track_evaluations
 
 
 def _read(db_path: Path, account_id: str):
     """Open a short-lived read-only connection for every Streamlit rerun."""
     connection = duckdb.connect(str(db_path), read_only=True)
     try:
-        return load_dashboard(connection, account_id), load_activity(connection, account_id), load_news_monitor(connection)
+        return (load_dashboard(connection, account_id), load_activity(connection, account_id),
+                load_news_monitor(connection), load_track_evaluations(connection))
     finally:
         connection.close()
 
@@ -90,7 +91,7 @@ def main() -> None:
         st.caption("生产基线会参与模拟撮合；事件影子仅用于对照评估。")
 
     try:
-        data, activity, news = _read(db_path, account_id)
+        data, activity, news, track_evaluations = _read(db_path, account_id)
     except Exception as error:
         st.error(f"无法读取看板：{error}")
         return
@@ -113,8 +114,8 @@ def main() -> None:
     if not rejected and not pending_exits:
         st.success("当前没有拒单或待执行风控卖单。", icon="✅")
 
-    overview, nav_tab, positions_tab, rec_tab, risk_tab, activity_tab, news_tab = st.tabs(
-        ["总览", "资产净值", "当前持仓", "冻结推荐", "风控状态", "订单与成交", "新闻与事件"]
+    overview, nav_tab, positions_tab, rec_tab, risk_tab, activity_tab, research_tab, news_tab = st.tabs(
+        ["总览", "资产净值", "当前持仓", "冻结推荐", "风控状态", "订单与成交", "影子评估", "新闻与事件"]
     )
     with overview:
         left, right = st.columns((2, 1))
@@ -182,6 +183,18 @@ def main() -> None:
             st.dataframe([{"拒单原因": row["reason"], "次数": row["count"]} for row in activity["reject_reasons"]], hide_index=True, width="stretch")
         else:
             _empty("尚无拒单记录。")
+    with research_tab:
+        st.subheader("基线与事件影子评估")
+        st.caption("两条轨道均按同一日频撮合、滑点、佣金、印花税与过户费假设评估；影子轨不会创建订单。")
+        if track_evaluations:
+            st.dataframe([{"目标日": row["target_date"], "轨道": "事件影子" if row["mode"] == "SHADOW" else "生产基线",
+                           "评估版本": row["evaluation_version"], "推荐数": row["recommendation_count"],
+                           "可成交率": _percent(row["execution_rate"]), "T+1": _percent(row["t1_return"]),
+                           "T+1 超额": _percent(row["t1_excess"]), "T+5": _percent(row["t5_return"]),
+                           "T+5 超额": _percent(row["t5_excess"]), "最大回撤": _percent(row["max_drawdown"])}
+                          for row in track_evaluations], hide_index=True, width="stretch")
+        else:
+            _empty("尚无成熟评估；在推荐后的完整 T+20 数据到齐后运行影子评估脚本。")
     with news_tab:
         st.subheader("新闻事实与事件影子研究")
         st.caption("新闻仅在归档、时间因果、来源质量和行业字典校验后，才可能进入影子事件假设；不会直接创建账户订单。")

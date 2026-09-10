@@ -306,6 +306,19 @@ CREATE TABLE IF NOT EXISTS performance_evaluations (
     UNIQUE (recommendation_item_id, evaluation_version)
 );
 
+-- Reproducible next-open assumptions for comparing production and shadow tracks.
+CREATE TABLE IF NOT EXISTS track_evaluation_details (
+    recommendation_item_id VARCHAR NOT NULL REFERENCES recommendation_items(item_id),
+    evaluation_version VARCHAR NOT NULL,
+    entry_trade_date DATE NOT NULL,
+    entry_price DECIMAL(20,8),
+    entry_cash_cost DECIMAL(20,8),
+    reject_reason VARCHAR,
+    price_cap_applied BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (recommendation_item_id, evaluation_version)
+);
+
 CREATE TABLE IF NOT EXISTS strategy_experiments (
     experiment_id VARCHAR PRIMARY KEY,
     account_id VARCHAR NOT NULL REFERENCES sim_accounts(account_id),

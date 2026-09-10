@@ -103,6 +103,23 @@ def load_activity(connection, account_id: str) -> dict:
     }
 
 
+def load_track_evaluations(connection, limit: int = 20) -> list:
+    """Aggregate persisted, cost-aware track evaluations for visual comparison."""
+    if limit <= 0:
+        raise ValueError("track evaluation limit must be positive")
+    rows = connection.execute(
+        "SELECT r.target_trade_date, p.evaluation_version, COALESCE(m.execution_mode, 'PRODUCTION'), "
+        "COUNT(*), AVG(CASE WHEN p.is_executed THEN 1.0 ELSE 0.0 END), AVG(p.t1_abs_return), AVG(p.t1_excess_return), "
+        "AVG(p.t5_abs_return), AVG(p.t5_excess_return), AVG(p.t20_abs_return), AVG(p.t20_excess_return), AVG(p.max_close_drawdown) "
+        "FROM performance_evaluations p JOIN recommendation_items i ON i.item_id = p.recommendation_item_id "
+        "JOIN recommendation_runs r ON r.run_id = i.run_id LEFT JOIN recommendation_run_modes m ON m.run_id = r.run_id "
+        "GROUP BY 1, 2, 3 ORDER BY r.target_trade_date DESC, p.evaluation_version DESC, COALESCE(m.execution_mode, 'PRODUCTION') LIMIT ?", [limit]
+    ).fetchall()
+    fields = ("target_date", "evaluation_version", "mode", "recommendation_count", "execution_rate", "t1_return", "t1_excess",
+              "t5_return", "t5_excess", "t20_return", "t20_excess", "max_drawdown")
+    return [dict(zip(fields, (_display(value) for value in row))) for row in rows]
+
+
 def load_news_monitor(connection, limit: int = 50) -> dict:
     """Return archived news and gated event hypotheses for the read-only monitor."""
     if limit <= 0:

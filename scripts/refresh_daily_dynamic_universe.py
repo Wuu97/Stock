@@ -34,6 +34,7 @@ def main() -> None:
     parser.add_argument("--min-total-market-cap", default="80000000000")
     parser.add_argument("--momentum-days", type=int, default=30)
     parser.add_argument("--top-n", type=int, default=50)
+    parser.add_argument("--benchmark-ticker", default="000300.SH")
     parser.add_argument("--artifact-dir", default="data/daily_refresh")
     args = parser.parse_args()
     trade_date = date.fromisoformat(args.trade_date)
@@ -57,6 +58,12 @@ def main() -> None:
     for day in days:
         frame = client.daily(trade_date=str(day), fields="ts_code,trade_date,open,high,low,close,vol,amount")
         records.extend(row for row in frame.to_dict("records") if str(row["ts_code"]) in caps)
+    benchmark = client.index_daily(ts_code=args.benchmark_ticker, start_date=str(days[0]), end_date=str(days[-1]),
+                                   fields="ts_code,trade_date,open,high,low,close,vol,amount")
+    benchmark_rows = benchmark.to_dict("records")
+    if len(benchmark_rows) != len(days):
+        raise RuntimeError("benchmark index data is incomplete for the momentum window")
+    records.extend(benchmark_rows)
     artifact_dir = Path(args.artifact_dir); artifact_dir.mkdir(parents=True, exist_ok=True)
     raw_path = artifact_dir / f"refresh_{trade_date.isoformat()}.raw.json"
     raw_path.write_text(json.dumps({"caps": cap_frame.to_dict("records"), "bars": records}, default=str, ensure_ascii=False), encoding="utf-8")
