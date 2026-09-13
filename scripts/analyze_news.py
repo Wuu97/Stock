@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 
-import duckdb
+from quant_core.database import writer_connection
 
 from quant_core.deepseek_provider import DeepSeekProvider
 from quant_core.environment import load_env_file
@@ -27,7 +27,7 @@ def main() -> None:
     parser.add_argument("--document-id", required=True)
     args = parser.parse_args()
     load_env_file(Path(".env"))
-    connection = duckdb.connect(args.db)
+    connection = writer_connection(args.db, transaction=False)
     try:
         row = connection.execute("SELECT ticker, headline, body, published_at, received_at FROM news_documents WHERE document_id = ?", [args.document_id]).fetchone()
         if row is None:

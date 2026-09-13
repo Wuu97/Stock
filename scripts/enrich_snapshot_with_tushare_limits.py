@@ -8,7 +8,7 @@ import json
 import os
 from pathlib import Path
 
-import duckdb
+from quant_core.database import writer_connection
 
 from quant_core.environment import load_env_file
 from quant_core.market_data import MarketDataStore
@@ -29,7 +29,7 @@ def main() -> None:
     token = os.environ.get("TUSHARE_TOKEN", "")
     if not token:
         raise ValueError("TUSHARE_TOKEN is not configured")
-    connection = duckdb.connect(args.db)
+    connection = writer_connection(args.db, transaction=False)
     try:
         base_bars = MarketDataStore(connection).load_bars(args.base_snapshot_id)
         raw_rows = fetch_daily_limit_records(token, sorted({bar.trade_date for bar in base_bars}))

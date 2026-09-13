@@ -6,8 +6,7 @@ from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
 
-import duckdb
-
+from quant_core.database import writer_connection
 from quant_core.market_data import MarketDataStore, read_daily_csv
 from quant_core.snapshots import SnapshotService, write_manifest
 
@@ -31,13 +30,12 @@ def main() -> None:
     digest = sha256(csv_path.read_bytes()).hexdigest()
     manifest_path = Path(args.audit_dir) / f"market_{snapshot_id}.json"
     manifest_hash = write_manifest(manifest_path, {str(csv_path): digest})
-    connection = duckdb.connect(args.db)
-    snapshots = SnapshotService(connection)
-    snapshots.register_market_snapshot(snapshot_id, max(bar.trade_date for bar in bars), args.source,
-                                       published_at, datetime.now(published_at.tzinfo), str(manifest_path),
-                                       manifest_hash, datetime.now(published_at.tzinfo))
-    MarketDataStore(connection).store_bars(snapshot_id, bars)
-    connection.close()
+    with writer_connection(args.db) as connection:
+        snapshots = SnapshotService(connection)
+        snapshots.register_market_snapshot(snapshot_id, max(bar.trade_date for bar in bars), args.source,
+                                           published_at, datetime.now(published_at.tzinfo), str(manifest_path),
+                                           manifest_hash, datetime.now(published_at.tzinfo))
+        MarketDataStore(connection).store_bars(snapshot_id, bars)
 
 
 if __name__ == "__main__":

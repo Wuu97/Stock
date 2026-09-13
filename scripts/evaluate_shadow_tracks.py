@@ -2,12 +2,14 @@
 
 import argparse
 import json
+from decimal import Decimal
 from pathlib import Path
 
-import duckdb
+from quant_core.database import writer_connection
 
 from quant_core.market_data import MarketDataStore
 from quant_core.cost_models import load_cost_model
+from quant_core.matching import OpenGapPolicy
 from quant_core.track_evaluation import evaluate_tracks
 
 
@@ -35,21 +37,24 @@ def main() -> None:
     parser.add_argument("--all-paired", action="store_true", help="Evaluate every frozen baseline/shadow run pair.")
     parser.add_argument("--market-snapshot-id", action="append", required=True)
     parser.add_argument("--benchmark-ticker", required=True)
-    parser.add_argument("--evaluation-version", default="track_evaluation_v1")
+    parser.add_argument("--evaluation-version", default="track_evaluation_open_gap_guard_v1")
     parser.add_argument("--shares", type=int, default=100)
     parser.add_argument("--cost-model-version", default="cost_a_share_2026_v1")
     parser.add_argument("--cost-model-config", default="config/cost_models.yaml")
+    parser.add_argument("--max-open-gap-up", default="0.03")
+    parser.add_argument("--max-open-gap-down", default="-0.04")
     args = parser.parse_args()
     if bool(args.run_id) == args.all_paired:
         parser.error("provide --run-id at least once, or use --all-paired")
     fee = load_cost_model(args.cost_model_version, Path(args.cost_model_config))
-    connection = duckdb.connect(args.db)
+    connection = writer_connection(args.db, transaction=False)
     try:
         run_ids = args.run_id or _paired_run_ids(connection)
         if not run_ids:
             raise ValueError("no frozen baseline/shadow recommendation pairs were found")
         summary = evaluate_tracks(connection, run_ids, MarketDataStore(connection).load_bars_many(args.market_snapshot_id),
-                                  args.benchmark_ticker, fee, args.evaluation_version, args.shares)
+                                  args.benchmark_ticker, fee, args.evaluation_version, args.shares,
+                                  OpenGapPolicy(Decimal(args.max_open_gap_up), Decimal(args.max_open_gap_down)))
     finally:
         connection.close()
     print(json.dumps(summary, ensure_ascii=False, default=str))

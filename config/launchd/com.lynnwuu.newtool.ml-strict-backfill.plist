@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.lynnwuu.newtool.ml-strict-backfill</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/zsh</string>
+		<string>/Users/lynnwuu/Library/Application Support/NewTool/continue_ml_strict_limit_backfill.sh</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/private/tmp/new_tool_ml_strict_backfill.error.log</string>
+	<key>StandardOutPath</key>
+	<string>/private/tmp/new_tool_ml_strict_backfill.log</string>
+	<key>WorkingDirectory</key>
+	<string>/Users/lynnwuu/Desktop/Gemini/stock/New_tool</string>
+</dict>
+</plist>

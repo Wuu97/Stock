@@ -6,7 +6,7 @@ import duckdb
 
 from quant_core.daily_risk import create_exit_intents
 from quant_core.models import DayBar
-from quant_core.risk import ExitRule, evaluate_exit
+from quant_core.risk import ExitRule, SignalDecayExitRule, VolatilityAdjustedExitRule, evaluate_exit
 from quant_core.settlement import SettlementService
 from quant_core.models import FeeModel, OrderIntent
 
@@ -32,6 +32,22 @@ def test_max_holding_day_is_fallback_after_price_rules():
         _bar(date(2026, 1, 2), Decimal("10")), _bar(date(2026, 1, 5), Decimal("10")),
     ], ExitRule(max_holding_days=2))
     assert signal and signal.reason == "MAX_HOLDING_DAYS"
+
+
+def test_volatility_exit_uses_bounded_close_volatility_thresholds():
+    bars = [_bar(date(2026, 1, 2), Decimal("10")), _bar(date(2026, 1, 5), Decimal("10.5")),
+            _bar(date(2026, 1, 6), Decimal("10")), _bar(date(2026, 1, 7), Decimal("10.4")),
+            _bar(date(2026, 1, 8), Decimal("9.1"))]
+    signal = evaluate_exit("600000.SH", Decimal("10"), bars, VolatilityAdjustedExitRule(max_stop_loss_rate=Decimal("0.08")))
+    assert signal and signal.reason == "VOLATILITY_STOP_LOSS_CLOSE"
+
+
+def test_signal_decay_uses_only_confirmed_holding_closes():
+    bars = [_bar(date(2026, 1, 2), Decimal("10")), _bar(date(2026, 1, 5), Decimal("10.2")),
+            _bar(date(2026, 1, 6), Decimal("10.1")), _bar(date(2026, 1, 7), Decimal("9.9")),
+            _bar(date(2026, 1, 8), Decimal("9.6"))]
+    signal = evaluate_exit("600000.SH", Decimal("10"), bars, SignalDecayExitRule())
+    assert signal and signal.reason == "SIGNAL_DECAY_CLOSE"
 
 
 def test_exit_signal_creates_one_next_open_sell_intent():

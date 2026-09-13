@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from time import sleep
 
-import duckdb
+from quant_core.database import writer_connection
 import tushare as ts
 
 from quant_core.environment import load_env_file
@@ -37,7 +37,7 @@ def main() -> None:
     classifications = client.index_classify(level="L3", src="SW2021").to_dict("records")
     taxonomy = taxonomy_rows(classifications)
     code_by_index = {str(row["index_code"]): str(row["industry_code"]) for row in classifications}
-    connection = duckdb.connect(args.db)
+    connection = writer_connection(args.db, transaction=False)
     try:
         tickers = sorted(UniverseService(connection).member_tickers(args.universe_snapshot_id)) if args.universe_snapshot_id else ()
         if args.universe_snapshot_id and not tickers:

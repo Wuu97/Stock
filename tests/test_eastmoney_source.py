@@ -1,7 +1,7 @@
 from datetime import date
 from decimal import Decimal
 
-from quant_core.eastmoney_source import parse_spot_quote, quote_to_bar, to_secid
+from quant_core.eastmoney_source import parse_history_bars, parse_spot_quote, quote_to_bar, to_secid
 
 
 def test_eastmoney_quote_normalizes_scaled_prices_and_market_cap():
@@ -13,8 +13,19 @@ def test_eastmoney_quote_normalizes_scaled_prices_and_market_cap():
     assert to_secid("600000.SH") == "1.600000"
     assert to_secid("000001.SZ") == "0.000001"
     assert to_secid("300750.SZ") == "0.300750"
+    assert to_secid("512400.SH") == "1.512400"
+    assert to_secid("159740.SZ") == "0.159740"
     assert (bar.open, bar.close, bar.limit_up, bar.limit_down) == (
         Decimal("10.4"), Decimal("10.5"), Decimal("11.5"), Decimal("9.5")
     )
     assert quote.total_market_cap == Decimal("100000000000")
     assert quote.pre_close == Decimal("10")
+
+
+def test_eastmoney_history_bars_are_unadjusted_and_do_not_invent_limits():
+    bars = parse_history_bars("512400.SH", {"klines": ["2026-09-10,1.700,1.710,1.730,1.690,1200,2050.5,0,0,0,0"]})
+    assert bars[0].trade_date == date(2026, 9, 10)
+    assert (bars[0].open, bars[0].close, bars[0].volume, bars[0].amount) == (
+        Decimal("1.700"), Decimal("1.710"), 1200, Decimal("2050.5")
+    )
+    assert bars[0].limit_up is None and bars[0].limit_down is None

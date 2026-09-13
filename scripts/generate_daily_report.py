@@ -4,7 +4,7 @@ import argparse
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-import duckdb
+from quant_core.database import writer_connection
 
 from quant_core.reporting import daily_monitoring_summary, write_daily_report
 
@@ -16,7 +16,7 @@ def main() -> None:
     parser.add_argument("--account-id")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
-    connection = duckdb.connect(args.db)
+    connection = writer_connection(args.db, transaction=False)
     summary = daily_monitoring_summary(connection, date.fromisoformat(args.trade_date), args.account_id)
     connection.close()
     write_daily_report(Path(args.output), summary, datetime.now(timezone.utc))

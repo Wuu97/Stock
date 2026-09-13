@@ -5,10 +5,11 @@ from datetime import date
 from decimal import Decimal
 import json
 
-import duckdb
+from quant_core.database import writer_connection
 
 from quant_core.backtest import BacktestConfig, replay_daily_strategy
 from quant_core.market_data import MarketDataStore
+from quant_core.matching import OpenGapPolicy
 from quant_core.models import FeeModel
 from quant_core.portfolio import PortfolioPolicy
 from quant_core.risk import ExitRule
@@ -26,16 +27,18 @@ def main() -> None:
     parser.add_argument("--universe-snapshot-id")
     parser.add_argument("--initial-cash", default="1000000")
     parser.add_argument("--strategy", choices=("baseline", "pure_momentum", "momentum_volume"), default="baseline")
-    parser.add_argument("--volume-multiple", default="1.0")
+    parser.add_argument("--volume-multiple", default="1.5")
     parser.add_argument("--top-n", type=int, default=5)
     parser.add_argument("--momentum-weight", default="0.7")
-    parser.add_argument("--portfolio-method", choices=("fixed_shares", "equal_weight"), default="fixed_shares")
+    parser.add_argument("--portfolio-method", choices=("fixed_shares", "equal_weight"), default="equal_weight")
     parser.add_argument("--shares-per-order", type=int, default=100)
-    parser.add_argument("--max-positions", type=int)
-    parser.add_argument("--cash-reserve", default="0")
+    parser.add_argument("--max-positions", type=int, default=5)
+    parser.add_argument("--cash-reserve", default="0.05")
+    parser.add_argument("--max-open-gap-up", default="0.03")
+    parser.add_argument("--max-open-gap-down", default="-0.04")
     args = parser.parse_args()
 
-    connection = duckdb.connect(args.db)
+    connection = writer_connection(args.db, transaction=False)
     try:
         bars = MarketDataStore(connection).load_bars_many(args.market_snapshot_id)
         days = sorted({bar.trade_date for bar in bars})
@@ -45,7 +48,7 @@ def main() -> None:
         allowed = None if not args.universe_snapshot_id else UniverseService(connection).member_tickers(args.universe_snapshot_id)
         policy = (PortfolioPolicy.fixed_shares(args.shares_per_order, args.max_positions)
                   if args.portfolio_method == "fixed_shares"
-                  else PortfolioPolicy.equal_weight(args.max_positions or 5, Decimal(args.cash_reserve)))
+                  else PortfolioPolicy.equal_weight(args.max_positions, Decimal(args.cash_reserve)))
         strategy = ({
             "baseline": lambda: baseline_strategy_spec(Decimal(args.volume_multiple), args.top_n),
             "pure_momentum": lambda: pure_momentum_strategy_spec(args.top_n),
@@ -55,7 +58,8 @@ def main() -> None:
             connection, bars, days,
             BacktestConfig(args.account_id, date.fromisoformat(args.start_date), date.fromisoformat(args.end_date),
                            shares_per_order=args.shares_per_order, top_n=args.top_n,
-                           volume_multiple=Decimal(args.volume_multiple), strategy_spec=strategy, portfolio_policy=policy),
+                           volume_multiple=Decimal(args.volume_multiple), strategy_spec=strategy, portfolio_policy=policy,
+                           open_gap_policy=OpenGapPolicy(Decimal(args.max_open_gap_up), Decimal(args.max_open_gap_down))),
             FeeModel("cost_a_share_2026_v1", Decimal("0.00025"), Decimal("5"), Decimal("0.0005"), Decimal("0.00001"), Decimal("0.001")),
             ExitRule(), allowed,
         )

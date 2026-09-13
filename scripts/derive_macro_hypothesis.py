@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 
-import duckdb
+from quant_core.database import writer_connection
 
 from quant_core.deepseek_provider import DeepSeekProvider
 from quant_core.environment import load_env_file
@@ -43,7 +43,7 @@ def main() -> None:
     if args.max_clusters <= 0:
         raise ValueError("--max-clusters must be positive")
     load_env_file(Path(".env"))
-    connection = duckdb.connect(args.db)
+    connection = writer_connection(args.db, transaction=False)
     try:
         rows = _load_evidence(connection, args.document_id, args.latest_hours, effective_as_of)
         if not rows:

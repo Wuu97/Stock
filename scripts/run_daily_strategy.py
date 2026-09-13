@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
-import duckdb
+from quant_core.database import writer_connection
 
 from quant_core.features import build_features
 from quant_core.event_shadow import active_event_adjustments, augment_recommendations
@@ -43,7 +43,7 @@ def main() -> None:
         raise ValueError("--effective-as-of must include a timezone")
     if args.event_shadow and not args.taxonomy_version:
         raise ValueError("--taxonomy-version is required with --event-shadow")
-    connection = duckdb.connect(args.db)
+    connection = writer_connection(args.db, transaction=False)
     data_store = MarketDataStore(connection)
     features = build_features(data_store.load_bars_many(args.market_snapshot_id), as_of_date, args.lookback_days)
     if args.universe_snapshot_id:

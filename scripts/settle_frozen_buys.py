@@ -6,7 +6,7 @@ from datetime import date
 from decimal import Decimal
 import json
 
-import duckdb
+from quant_core.database import writer_connection
 
 from quant_core.daily_settlement import settle_frozen_buys
 from quant_core.models import FeeModel
@@ -31,7 +31,7 @@ def main() -> None:
         "cost_a_share_2026_v1", Decimal(args.commission_rate), Decimal(args.min_commission),
         Decimal(args.stamp_duty_rate), Decimal(args.transfer_fee_rate), Decimal(args.slippage_rate),
     )
-    connection = duckdb.connect(args.db)
+    connection = writer_connection(args.db, transaction=False)
     outcomes = settle_frozen_buys(
         connection, args.account_id, args.market_snapshot_id, date.fromisoformat(args.trade_date),
         date.fromisoformat(args.next_trading_date), args.shares, fee,

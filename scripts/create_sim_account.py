@@ -4,7 +4,7 @@ import argparse
 from datetime import date
 from decimal import Decimal
 
-import duckdb
+from quant_core.database import writer_connection
 
 from quant_core.settlement import SettlementService
 
@@ -17,7 +17,7 @@ def main() -> None:
     parser.add_argument("--initial-cash", required=True)
     parser.add_argument("--opening-date", required=True)
     args = parser.parse_args()
-    connection = duckdb.connect(args.db)
+    connection = writer_connection(args.db, transaction=False)
     SettlementService(connection).create_account(
         args.account_id, args.name, Decimal(args.initial_cash), date.fromisoformat(args.opening_date)
     )

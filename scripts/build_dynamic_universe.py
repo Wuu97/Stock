@@ -4,7 +4,7 @@ import argparse
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
-import duckdb
+from quant_core.database import writer_connection
 
 from quant_core.market_data import MarketDataStore
 from quant_core.universe import DynamicUniverseRule, UniverseService
@@ -24,7 +24,7 @@ def main() -> None:
 
     if args.momentum_days <= 0 or args.top_n <= 0:
         raise ValueError("--momentum-days and --top-n must be positive")
-    connection = duckdb.connect(args.db)
+    connection = writer_connection(args.db, transaction=False)
     service = UniverseService(connection)
     rule = DynamicUniverseRule(args.group_name, Decimal(args.min_total_market_cap), args.momentum_days, args.top_n)
     snapshot_id = service.create_snapshot(

@@ -7,7 +7,7 @@ import json
 import os
 from pathlib import Path
 
-import duckdb
+from quant_core.database import writer_connection
 
 from quant_core.environment import load_env_file
 from quant_core.trading_status import TradingStatusStore
@@ -32,7 +32,7 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     client = create_tushare_client(token)
-    connection = duckdb.connect(args.db)
+    connection = writer_connection(args.db, transaction=False)
     try:
         store = TradingStatusStore(connection)
         result = []

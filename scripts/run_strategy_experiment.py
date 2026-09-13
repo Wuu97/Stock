@@ -10,14 +10,15 @@ from pathlib import Path
 from typing import Optional
 from uuid import uuid4
 
-import duckdb
+from quant_core.database import writer_connection
 
 from quant_core.backtest import BacktestConfig, replay_daily_strategy
 from quant_core.experiments import BenchmarkClose, ExperimentSpec, ExperimentStore, calculate_metrics
 from quant_core.market_data import MarketDataStore
+from quant_core.matching import OpenGapPolicy
 from quant_core.models import FeeModel
 from quant_core.portfolio import PortfolioPolicy
-from quant_core.risk import ExitRule
+from quant_core.risk import ExitRule, SignalDecayExitRule, VolatilityAdjustedExitRule
 from quant_core.settlement import SettlementService
 from quant_core.strategy_research import baseline_strategy_spec, momentum_volume_strategy_spec, pure_momentum_strategy_spec
 from quant_core.trading_status import TradingStatusStore
@@ -48,6 +49,12 @@ def main() -> None:
     parser.add_argument("--shares-per-order", type=int, default=100)
     parser.add_argument("--max-positions", type=int)
     parser.add_argument("--cash-reserve", default="0")
+    parser.add_argument("--max-open-gap-up", default="0.03")
+    parser.add_argument("--max-open-gap-down", default="-0.04")
+    parser.add_argument("--exit-policy", choices=("fixed", "volatility_adjusted", "signal_decay"), default="fixed")
+    parser.add_argument("--signal-decay-lookback-days", type=int, default=5)
+    parser.add_argument("--signal-decay-return-threshold", default="-0.03")
+    parser.add_argument("--signal-decay-min-holding-days", type=int, default=5)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
 
@@ -63,8 +70,9 @@ def main() -> None:
         "pure_momentum": lambda: pure_momentum_strategy_spec(args.top_n),
         "momentum_volume": lambda: momentum_volume_strategy_spec(args.top_n, Decimal(args.momentum_weight)),
     }[args.strategy])()
-    rule = ExitRule()
-    connection = duckdb.connect(args.db)
+    rule = _exit_rule(args)
+    open_gap_policy = OpenGapPolicy(Decimal(args.max_open_gap_up), Decimal(args.max_open_gap_down))
+    connection = writer_connection(args.db, transaction=False)
     try:
         if connection.execute("SELECT 1 FROM sim_accounts WHERE account_id = ?", [args.account_id]).fetchone():
             raise ValueError("experiment account_id already exists; experiments require a fresh account")
@@ -95,7 +103,7 @@ def main() -> None:
                 if required_tickers != {args.benchmark_ticker} else data_store.load_bars_many(snapshot_ids))
         days = sorted({bar.trade_date for bar in bars})
         spec = ExperimentSpec(strategy, policy, rule, fee.version, start, end, tuple(snapshot_ids),
-                              universe_reference, args.benchmark_ticker, benchmark_reference, initial_cash)
+                              universe_reference, args.benchmark_ticker, benchmark_reference, initial_cash, open_gap_policy)
         now, experiment_id = datetime.now(timezone.utc), str(uuid4())
         try:
             SettlementService(connection).create_account(args.account_id, f"Experiment {experiment_id[:8]}", initial_cash, start)
@@ -103,7 +111,7 @@ def main() -> None:
             store.create(experiment_id, args.account_id, spec, now)
             replay = replay_daily_strategy(connection, bars, days,
                                            BacktestConfig(args.account_id, start, end, args.shares_per_order, 20, args.top_n,
-                                                          volume_multiple, strategy, policy), fee, rule, allowed, universe_by_date,
+                                                          volume_multiple, strategy, policy, open_gap_policy), fee, rule, allowed, universe_by_date,
                                            suspended_tickers_by_date=suspended_tickers_by_date)
             metrics = calculate_metrics(connection, args.account_id,
                                         benchmark_bars or [bar for bar in bars if bar.ticker == args.benchmark_ticker])
@@ -163,6 +171,21 @@ def _load_benchmark(path_value: Optional[str], ticker: str) -> tuple[list[Benchm
     if not values or any(value.close <= 0 for value in values):
         raise ValueError("benchmark CSV has no valid closes for the requested ticker")
     return values, f"CSV_SHA256:{sha256(path.read_bytes()).hexdigest()}"
+
+
+def _exit_rule(args):
+    """Keep experiment exit-policy defaults versioned in one orchestration boundary."""
+    if args.exit_policy == "fixed":
+        return ExitRule()
+    if args.exit_policy == "volatility_adjusted":
+        return VolatilityAdjustedExitRule()
+    if args.exit_policy == "signal_decay":
+        return SignalDecayExitRule(
+            decay_lookback_days=args.signal_decay_lookback_days,
+            decay_return_threshold=Decimal(args.signal_decay_return_threshold),
+            min_holding_days=args.signal_decay_min_holding_days,
+        )
+    raise ValueError(f"unsupported exit policy: {args.exit_policy}")
 
 
 if __name__ == "__main__":

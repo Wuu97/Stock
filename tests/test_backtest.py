@@ -7,6 +7,7 @@ import pytest
 
 from quant_core.backtest import BacktestConfig, _build_feature_rows_by_day, replay_daily_strategy
 from quant_core.features import build_features
+from quant_core.matching import OpenGapPolicy
 from quant_core.models import DayBar, FeeModel
 from quant_core.risk import ExitRule
 from quant_core.portfolio import PortfolioPolicy
@@ -31,6 +32,28 @@ def test_backtest_replays_next_open_orders_without_future_bars():
     )
     assert result["buy_orders_submitted"] == 1
     assert result["orders"]["BUY_FILLED"] == 1
+
+
+def test_backtest_rejects_a_buy_when_next_open_exceeds_the_frozen_gap_guard():
+    connection = duckdb.connect(":memory:")
+    connection.execute(Path("sql/schema.sql").read_text())
+    start = date(2026, 1, 2)
+    days = [start + timedelta(days=index) for index in range(23)]
+    bars = [DayBar(day, "600000.SH", Decimal("10.6") if index == 21 else Decimal("10"), Decimal("10.7") if index == 21 else Decimal("10.2"),
+                   Decimal("9.8"), Decimal("10") + Decimal(index) / Decimal("100"), 1000, Decimal("10000"), Decimal("20"), Decimal("1"))
+            for index, day in enumerate(days)]
+    SettlementService(connection).create_account("backtest", "test", Decimal("100000"), start)
+    result = replay_daily_strategy(
+        connection, bars, days,
+        BacktestConfig("backtest", days[20], days[-1], top_n=1, volume_multiple=Decimal("0.5"),
+                       open_gap_policy=OpenGapPolicy(Decimal("0.03"), Decimal("-0.04"))),
+        FeeModel("test", Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0")),
+        ExitRule(), {"600000.SH"},
+    )
+    assert result["orders"]["BUY_REJECTED"] >= 1
+    assert connection.execute(
+        "SELECT COUNT(*) FROM sim_order_intents WHERE reject_reason_code = 'OPEN_GAP_UP_TOO_HIGH'"
+    ).fetchone()[0] >= 1
 
 
 def test_backtest_fails_closed_when_point_in_time_universe_is_missing():
@@ -102,6 +125,25 @@ def test_equal_weight_backtest_creates_board_lot_orders_from_available_cash():
                                          portfolio_policy=PortfolioPolicy.equal_weight(1)),
                           FeeModel("test", Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0")),
                           ExitRule(), {"600000.SH"})
+    assert connection.execute("SELECT target_shares FROM sim_order_intents WHERE direction = 'BUY'").fetchone()[0] == 900
+
+
+def test_backtest_defaults_match_forward_portfolio_policy():
+    connection = duckdb.connect(":memory:")
+    connection.execute(Path("sql/schema.sql").read_text())
+    start = date(2026, 1, 2)
+    days = [start + timedelta(days=index) for index in range(25)]
+    bars = [DayBar(day, "600000.SH", Decimal("10"), Decimal("10.2"), Decimal("9.8"), Decimal("10") + Decimal(index) / Decimal("100"),
+                   1000, Decimal("10000"), Decimal("20"), Decimal("1")) for index, day in enumerate(days)]
+    SettlementService(connection).create_account("default-policy", "test", Decimal("10000"), start)
+
+    replay_daily_strategy(
+        connection, bars, days,
+        BacktestConfig("default-policy", days[20], days[-1], top_n=1, volume_multiple=Decimal("0.5")),
+        FeeModel("test", Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0")),
+        ExitRule(), {"600000.SH"},
+    )
+
     assert connection.execute("SELECT target_shares FROM sim_order_intents WHERE direction = 'BUY'").fetchone()[0] == 900
 
 

@@ -1,7 +1,7 @@
 """Free global-event sources used as attributable evidence, not trading facts."""
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import gzip
 from hashlib import sha256
 import json
@@ -18,6 +18,11 @@ from .akshare_source import _parse_news_time
 from .news import NewsDocument
 
 
+GDELT_CACHE_WINDOW_HOURS = 6
+GDELT_MIN_REQUEST_INTERVAL_SECONDS = 30
+GDELT_RATE_LIMIT_COOLDOWN_SECONDS = 6 * 60 * 60
+
+
 @dataclass(frozen=True)
 class GdeltFetch:
     documents: tuple[NewsDocument, ...]
@@ -25,6 +30,16 @@ class GdeltFetch:
     artifact_path: str
     artifact_sha256: str
     attempts: Tuple[Tuple[int, int, float, Optional[str]], ...]
+
+
+class GdeltRequestError(RuntimeError):
+    """Expose audited GDELT failures to the ingestion layer without retrying them."""
+
+    def __init__(self, message: str, request_key_sha256: str,
+                 attempts: Tuple[Tuple[int, int, float, Optional[str]], ...]):
+        super().__init__(message)
+        self.request_key_sha256 = request_key_sha256
+        self.attempts = attempts
 
 
 @dataclass(frozen=True)
@@ -53,34 +68,84 @@ def gdelt_articles(query: str, received_at: datetime, max_records: int = 50) -> 
 
 
 def gdelt_articles_cached(query: str, received_at: datetime, cache_dir: Path, max_records: int = 50) -> GdeltFetch:
-    """Cache one normalized query per UTC hour and audit every retry outcome."""
+    """Fetch GDELT sparingly: six-hour cache, global spacing and cooldown after HTTP 429."""
     normalized = " ".join(query.lower().split())
     if not normalized:
         raise ValueError("GDELT query is required")
-    hour = received_at.astimezone(timezone.utc).strftime("%Y%m%dT%H")
-    request_key = sha256(f"{normalized}_{hour}".encode("utf-8")).hexdigest()
+    request_key = _gdelt_request_key(normalized, received_at)
     cache_path = cache_dir / f"gdelt_{request_key}.json"
     cache_dir.mkdir(parents=True, exist_ok=True)
     if cache_path.exists():
         payload = json.loads(cache_path.read_text(encoding="utf-8"))
         return _gdelt_result(payload, received_at, request_key, cache_path, ((1, 200, 0.0, "CACHE_HIT"),))
+
+    cooldown_seconds = _gdelt_cooldown_seconds(cache_dir, received_at)
+    if cooldown_seconds > 0:
+        raise GdeltRequestError(
+            "GDELT global cooldown is active after HTTP 429",
+            request_key,
+            ((1, 429, cooldown_seconds, "COOLDOWN_ACTIVE"),),
+        )
+
+    _wait_for_gdelt_request_slot(cache_dir, received_at)
     params = urlencode({"query": query, "mode": "artlist", "format": "json", "maxrecords": max_records})
     url = "https://api.gdeltproject.org/api/v2/doc/doc?" + params
-    attempts = []
-    for attempt in range(1, 4):
-        try:
-            payload = _get_json(url)
-            cache_path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True), encoding="utf-8")
-            attempts.append((attempt, 200, 0.0, None))
-            return _gdelt_result(payload, received_at, request_key, cache_path, tuple(attempts))
-        except RuntimeError as error:
-            rate_limited = "rate-limited" in str(error)
-            backoff = round((2 ** attempt) + (int(request_key[:2], 16) / 255), 3) if rate_limited and attempt < 3 else 0.0
-            attempts.append((attempt, 429 if rate_limited else 0, backoff, "RATE_LIMIT" if rate_limited else "REQUEST_FAILED"))
-            if not backoff:
-                raise RuntimeError("GDELT request failed after audited retries") from error
-            sleep(backoff)
-    raise RuntimeError("GDELT request failed after audited retries")
+    try:
+        payload = _get_json(url)
+    except RuntimeError as error:
+        if "rate-limited" in str(error):
+            _write_gdelt_cooldown(cache_dir, received_at)
+            raise GdeltRequestError(
+                "GDELT request was rate-limited; global cooldown started",
+                request_key,
+                ((1, 429, float(GDELT_RATE_LIMIT_COOLDOWN_SECONDS), "RATE_LIMIT"),),
+            ) from error
+        raise GdeltRequestError(
+            "GDELT request failed",
+            request_key,
+            ((1, 0, 0.0, "REQUEST_FAILED"),),
+        ) from error
+    cache_path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+    return _gdelt_result(payload, received_at, request_key, cache_path, ((1, 200, 0.0, None),))
+
+
+def _gdelt_request_key(normalized_query: str, received_at: datetime) -> str:
+    utc = received_at.astimezone(timezone.utc)
+    window_start = utc.replace(hour=(utc.hour // GDELT_CACHE_WINDOW_HOURS) * GDELT_CACHE_WINDOW_HOURS,
+                               minute=0, second=0, microsecond=0)
+    return sha256(f"{normalized_query}_{window_start:%Y%m%dT%H}".encode("utf-8")).hexdigest()
+
+
+def _gdelt_cooldown_seconds(cache_dir: Path, received_at: datetime) -> float:
+    path = cache_dir / "gdelt_global_cooldown.json"
+    if not path.exists():
+        return 0.0
+    try:
+        until = datetime.fromisoformat(json.loads(path.read_text(encoding="utf-8"))["until"])
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return 0.0
+    return max(0.0, round((until - received_at.astimezone(timezone.utc)).total_seconds(), 3))
+
+
+def _write_gdelt_cooldown(cache_dir: Path, received_at: datetime) -> None:
+    until = received_at.astimezone(timezone.utc) + timedelta(seconds=GDELT_RATE_LIMIT_COOLDOWN_SECONDS)
+    (cache_dir / "gdelt_global_cooldown.json").write_text(
+        json.dumps({"until": until.isoformat()}, sort_keys=True), encoding="utf-8"
+    )
+
+
+def _wait_for_gdelt_request_slot(cache_dir: Path, received_at: datetime) -> None:
+    """Enforce a shared request interval across separate ingestion subprocesses."""
+    path = cache_dir / "gdelt_last_request.json"
+    now = received_at.astimezone(timezone.utc)
+    try:
+        previous = datetime.fromisoformat(json.loads(path.read_text(encoding="utf-8"))["requested_at"])
+        delay = max(0.0, GDELT_MIN_REQUEST_INTERVAL_SECONDS - (now - previous).total_seconds())
+    except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        delay = 0.0
+    if delay:
+        sleep(delay)
+    path.write_text(json.dumps({"requested_at": (now + timedelta(seconds=delay)).isoformat()}, sort_keys=True), encoding="utf-8")
 
 
 def _gdelt_result(payload, received_at, request_key, cache_path, attempts) -> GdeltFetch:

@@ -8,6 +8,8 @@ from uuid import uuid4
 
 import duckdb
 
+from .database import writer_connection
+
 from .snapshots import canonical_hash
 
 
@@ -17,7 +19,7 @@ class PipelineStore:
 
     def start_or_resume(self, trade_date: date, account_id: str, config: dict, effective_as_of: datetime) -> tuple[str, datetime, bool]:
         config_json, config_hash = json.dumps(config, ensure_ascii=False, sort_keys=True, separators=(",", ":")), canonical_hash(config)
-        connection = duckdb.connect(self.db_path)
+        connection = writer_connection(self.db_path, transaction=False)
         try:
             row = connection.execute("SELECT pipeline_run_id, effective_as_of_timestamp, run_status, config_sha256 FROM pipeline_runs WHERE trade_date = ? AND account_id = ?", [trade_date, account_id]).fetchone()
             if row is None:
@@ -37,7 +39,7 @@ class PipelineStore:
             connection.close()
 
     def run_stage(self, run_id: str, name: str, execution_class: str, operation: Callable[[], object]) -> object:
-        connection = duckdb.connect(self.db_path)
+        connection = writer_connection(self.db_path, transaction=False)
         try:
             summary = connection.execute("SELECT stage_status, artifact_reference FROM pipeline_run_stages WHERE pipeline_run_id = ? AND stage_name = ?", [run_id, name]).fetchone()
             if summary and summary[0] == "SUCCEEDED":
@@ -64,7 +66,7 @@ class PipelineStore:
             return {"status": "NON_BLOCKING_FAILURE", "reason": str(error)}
 
     def finish(self, run_id: str) -> None:
-        connection = duckdb.connect(self.db_path)
+        connection = writer_connection(self.db_path, transaction=False)
         try:
             failures = connection.execute("SELECT COUNT(*) FROM pipeline_run_stages WHERE pipeline_run_id = ? AND stage_status = 'FAILED' AND execution_class = 'NON_BLOCKING'", [run_id]).fetchone()[0]
             connection.execute("UPDATE pipeline_runs SET run_status = ?, completed_at = ?, error_text = NULL WHERE pipeline_run_id = ?", ["COMPLETED_WITH_WARNINGS" if failures else "COMPLETED", datetime.now(timezone.utc), run_id])
@@ -72,7 +74,7 @@ class PipelineStore:
             connection.close()
 
     def _complete_stage(self, run_id: str, name: str, attempt: int, status: str, artifact: str, error: str) -> None:
-        connection = duckdb.connect(self.db_path)
+        connection = writer_connection(self.db_path, transaction=False)
         try:
             now = datetime.now(timezone.utc)
             connection.execute("UPDATE pipeline_run_stage_attempts SET stage_status = ?, completed_at = ?, artifact_reference = ?, error_text = ? WHERE pipeline_run_id = ? AND stage_name = ? AND attempt_number = ?", [status, now, artifact, error, run_id, name, attempt])
@@ -81,7 +83,7 @@ class PipelineStore:
             connection.close()
 
     def _fail_run(self, run_id: str, error: str) -> None:
-        connection = duckdb.connect(self.db_path)
+        connection = writer_connection(self.db_path, transaction=False)
         try:
             connection.execute("UPDATE pipeline_runs SET run_status = 'FAILED', completed_at = ?, error_text = ? WHERE pipeline_run_id = ?", [datetime.now(timezone.utc), error, run_id])
         finally:

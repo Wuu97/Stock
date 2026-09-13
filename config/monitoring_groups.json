@@ -2,9 +2,50 @@
   "groups": [
     {
       "name": "large_cap_momentum",
+      "type": "dynamic",
       "min_total_market_cap": "80000000000",
       "momentum_window_days": 30,
-      "top_n": 50
+      "top_n": 50,
+      "min_listing_trading_days": 60
+    },
+    {
+      "name": "long_term_liquid_candidate",
+      "type": "liquidity_dynamic",
+      "execution_mode": "SHADOW",
+      "min_total_market_cap": "0",
+      "max_total_market_cap": null,
+      "liquidity_lookback_days": 20,
+      "min_average_amount": "50000000",
+      "momentum_window_days": 20,
+      "min_momentum": null,
+      "top_n": 5000,
+      "min_listing_trading_days": 60,
+      "eligibility_note": "Candidate pool only: PIT ST and listing-age gates are required before any trading use."
+    },
+    {
+      "name": "event_elasticity_candidate",
+      "type": "liquidity_dynamic",
+      "execution_mode": "SHADOW",
+      "min_total_market_cap": "2000000000",
+      "max_total_market_cap": "80000000000",
+      "liquidity_lookback_days": 20,
+      "min_average_amount": "100000000",
+      "momentum_window_days": 5,
+      "min_momentum": "0.05",
+      "top_n": 100,
+      "min_listing_trading_days": 60,
+      "eligibility_note": "Candidate pool only: requires independent news/event evidence and stricter execution gates before trading use."
+    },
+    {
+      "name": "personal_holdings",
+      "type": "fixed",
+      "execution_mode": "SHADOW",
+      "tickers": [
+        "000681.SZ", "000737.SZ", "002050.SZ", "002467.SZ", "002624.SZ", "002669.SZ", "002716.SZ", "002813.SZ",
+        "300058.SZ", "301236.SZ", "512400.SH", "513750.SH", "516080.SH", "588000.SH", "159740.SZ", "159792.SZ",
+        "600570.SH", "600732.SH", "600809.SH", "601020.SH", "601066.SH", "601698.SH", "601888.SH", "601899.SH",
+        "601975.SH", "603222.SH", "603259.SH"
+      ]
     }
   ]
 }

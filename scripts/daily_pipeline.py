@@ -3,6 +3,7 @@
 import argparse
 from dataclasses import asdict
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 import json
 import os
 from hashlib import sha256
@@ -12,12 +13,14 @@ import sys
 from typing import Iterable, Optional
 from zoneinfo import ZoneInfo
 
-import duckdb
+from quant_core.database import read_connection, writer_connection
 
 from quant_core.daily_settlement import settle_frozen_buys, settle_pending_sells
 from quant_core.environment import load_env_file
 from quant_core.cost_models import load_cost_model
+from quant_core.matching import OpenGapPolicy
 from quant_core.pipeline_audit import PipelineStore
+from quant_core.portfolio import PortfolioPolicy
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -93,19 +96,17 @@ def _taxonomy_version(connection, configured: Optional[str]) -> str:
     return row[0]
 
 
-def _settle(connection, account_id: str, snapshot_id: str, trade_date: date, next_date: date, fee) -> dict:
+def _settle(connection, account_id: str, snapshot_id: str, trade_date: date, next_date: date, fee, policy,
+            open_gap_policy: OpenGapPolicy) -> dict:
     sells = settle_pending_sells(connection, account_id, snapshot_id, trade_date, next_date, fee)
-    buys = settle_frozen_buys(connection, account_id, snapshot_id, trade_date, next_date, 100, fee)
+    buys = settle_frozen_buys(connection, account_id, snapshot_id, trade_date, next_date, 100, fee, policy, open_gap_policy)
     return {"sells": [asdict(item) for item in sells], "buys": [asdict(item) for item in buys]}
 
 
 def _context(db_path: str, account_id: str, configured_taxonomy: Optional[str]) -> dict:
-    connection = duckdb.connect(db_path)
-    try:
+    with read_connection(db_path) as connection:
         return {"taxonomy_version": _taxonomy_version(connection, configured_taxonomy),
                 "tracked_tickers": _tracked_tickers(connection, account_id)}
-    finally:
-        connection.close()
 
 
 def main() -> None:
@@ -117,6 +118,12 @@ def main() -> None:
     parser.add_argument("--group-name", default="all_a_large_cap_momentum")
     parser.add_argument("--cost-model-version", default="cost_a_share_2026_v1")
     parser.add_argument("--cost-model-config", default="config/cost_models.yaml")
+    parser.add_argument("--max-positions", type=int, default=5)
+    parser.add_argument("--cash-reserve", type=Decimal, default=Decimal("0.05"))
+    parser.add_argument("--max-open-gap-up", type=Decimal, default=Decimal("0.03"))
+    parser.add_argument("--max-open-gap-down", type=Decimal, default=Decimal("-0.04"))
+    parser.add_argument("--ml-shadow-model", help="Versioned model artifact; enables a non-trading ML shadow run")
+    parser.add_argument("--ml-shadow-top-n", type=int, default=5)
     parser.add_argument("--report-dir", default="data/top50/reports")
     parser.add_argument("--rss-feed", action="append", default=[], metavar="CHANNEL=URL")
     parser.add_argument("--gdelt-query", action="append", default=[])
@@ -126,6 +133,8 @@ def main() -> None:
     now = datetime.now(SHANGHAI)
     _run("init_db.py", ["--db", args.db])
     fee = load_cost_model(args.cost_model_version, ROOT / args.cost_model_config)
+    policy = PortfolioPolicy.equal_weight(args.max_positions, args.cash_reserve)
+    open_gap_policy = OpenGapPolicy(args.max_open_gap_up, args.max_open_gap_down)
     run_config = {"arguments": vars(args), "cost_model": {"version": fee.version, "commission_rate": str(fee.commission_rate),
                   "min_commission": str(fee.min_commission), "stamp_duty_rate": str(fee.stamp_duty_rate),
                   "transfer_fee_rate": str(fee.transfer_fee_rate), "slippage_rate": str(fee.slippage_rate)},
@@ -148,11 +157,8 @@ def main() -> None:
          "--snapshot-id", enriched_snapshot, "--exempt-ticker", "000300.SH"]))
 
     def settle_stage():
-        connection = duckdb.connect(args.db)
-        try:
-            return _settle(connection, args.account_id, enriched_snapshot, trade_date, next_date, fee)
-        finally:
-            connection.close()
+        with writer_connection(args.db, transaction=False) as connection:
+            return _settle(connection, args.account_id, enriched_snapshot, trade_date, next_date, fee, policy, open_gap_policy)
     settlement = audit.run_stage(run_id, "settlement", "BLOCKING", settle_stage)
     exits = audit.run_stage(run_id, "exit_signals", "BLOCKING", lambda: _run("generate_exit_orders.py", ["--db", args.db, "--account-id", args.account_id,
              "--market-snapshot-id", enriched_snapshot, "--as-of-date", trade_date.isoformat(),
@@ -160,6 +166,11 @@ def main() -> None:
 
     def news_stage():
         news = {"cls": _run("ingest_news.py", ["--db", args.db, "--source", "cls"])}
+        if tracked_tickers:
+            cninfo_args = ["--db", args.db, "--source", "cninfo", "--date", trade_date.isoformat()]
+            for ticker in tracked_tickers:
+                cninfo_args.extend(("--cninfo-ticker", ticker))
+            news["cninfo"] = _run("ingest_news.py", cninfo_args)
         for channel_url in args.rss_feed:
             channel, separator, url = channel_url.partition("=")
             if not separator or not channel or not url:
@@ -170,6 +181,14 @@ def main() -> None:
             news[f"gdelt:{query}"] = _run("ingest_news.py", ["--db", args.db, "--source", "gdelt", "--query", query])
         return news
     news = audit.run_stage(run_id, "news", "NON_BLOCKING", news_stage)
+    def risk_veto_shadow_stage():
+        if not tracked_tickers:
+            return {"mode": "SHADOW_ONLY", "status": "SKIPPED_NO_TRACKED_TICKERS"}
+        arguments = ["--db", args.db, "--effective-as-of", effective_as_of.isoformat()]
+        for ticker in tracked_tickers:
+            arguments.extend(("--ticker", ticker))
+        return _run("analyze_ticker_news.py", arguments)
+    risk_veto_shadow = audit.run_stage(run_id, "risk_veto_shadow", "NON_BLOCKING", risk_veto_shadow_stage)
     macro = audit.run_stage(run_id, "macro_hypothesis", "NON_BLOCKING", lambda: _run("derive_macro_hypothesis.py", ["--db", args.db, "--latest-hours", "24",
                              "--effective-as-of", effective_as_of.isoformat(), "--taxonomy-version", taxonomy_version,
                              "--official-domain", "news.un.org"]))
@@ -178,16 +197,25 @@ def main() -> None:
                      "--as-of-date", trade_date.isoformat(), "--target-date", next_date.isoformat(),
                      "--effective-as-of", effective_as_of.isoformat(), "--universe-snapshot-id", refresh["universe_snapshot_id"],
                      "--event-shadow", "--taxonomy-version", taxonomy_version]))
+    def ml_shadow_stage():
+        if not args.ml_shadow_model:
+            return {"status": "SKIPPED_NO_MODEL"}
+        return _run("run_ml_shadow_strategy.py", ["--db", args.db, "--market-snapshot-id", enriched_snapshot,
+                    "--as-of-date", trade_date.isoformat(), "--target-date", next_date.isoformat(),
+                    "--effective-as-of", effective_as_of.isoformat(), "--universe-snapshot-id", refresh["universe_snapshot_id"],
+                    "--model", args.ml_shadow_model, "--top-n", str(args.ml_shadow_top_n)])
+    ml_shadow = audit.run_stage(run_id, "ml_shadow", "NON_BLOCKING", ml_shadow_stage)
     evaluation = audit.run_stage(run_id, "shadow_evaluation", "NON_BLOCKING", lambda: _run("evaluate_shadow_tracks.py", ["--db", args.db, "--all-paired", "--market-snapshot-id",
                        enriched_snapshot, "--benchmark-ticker", "000300.SH", "--cost-model-version", fee.version,
-                       "--cost-model-config", str(ROOT / args.cost_model_config)]))
+                       "--cost-model-config", str(ROOT / args.cost_model_config),
+                       "--max-open-gap-up", str(args.max_open_gap_up), "--max-open-gap-down", str(args.max_open_gap_down)]))
     report_path = Path(args.report_dir) / f"daily_{trade_date.isoformat()}.json"
     audit.run_stage(run_id, "daily_report", "NON_BLOCKING", lambda: _run("generate_daily_report.py", ["--db", args.db, "--trade-date", next_date.isoformat(),
          "--account-id", args.account_id, "--output", str(report_path)]))
     payload = {"trade_date": trade_date.isoformat(), "next_trade_date": next_date.isoformat(),
                "pipeline_run_id": run_id, "effective_as_of": effective_as_of.isoformat(), "market_snapshot_id": enriched_snapshot,
                "universe_snapshot_id": refresh["universe_snapshot_id"], "settlement": settlement, "exit_signals": exits,
-               "news": news, "macro": macro, "strategy": strategy, "evaluation": evaluation,
+               "news": news, "risk_veto_shadow": risk_veto_shadow, "macro": macro, "strategy": strategy, "ml_shadow": ml_shadow, "evaluation": evaluation,
                "report_path": str(report_path)}
     pipeline_path = Path(args.report_dir) / f"pipeline_{trade_date.isoformat()}.json"
     pipeline_path.parent.mkdir(parents=True, exist_ok=True)

@@ -17,6 +17,7 @@ class FeatureRow:
     average_volume: Decimal
     momentum: Decimal
     volume_ratio: Decimal
+    momentum_5d: Decimal = Decimal("0")
 
 
 def build_features(bars: Iterable[DayBar], as_of_trade_date: date, lookback_days: int) -> List[FeatureRow]:
@@ -43,5 +44,7 @@ def build_features(bars: Iterable[DayBar], as_of_trade_date: date, lookback_days
             average_volume=average_volume,
             momentum=(window[-1].close / window[0].close) - Decimal("1"),
             volume_ratio=Decimal(window[-1].volume) / average_volume if average_volume else Decimal("0"),
+            momentum_5d=((window[-1].close / window[-6].close) - Decimal("1")
+                          if lookback_days >= 6 else Decimal("0")),
         ))
     return rows

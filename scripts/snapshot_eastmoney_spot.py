@@ -1,4 +1,4 @@
-"""Freeze a low-frequency Eastmoney spot snapshot for monitored A-share tickers."""
+"""Freeze a low-frequency Eastmoney spot snapshot for monitored A-share and ETF tickers."""
 
 import argparse
 from dataclasses import asdict
@@ -8,8 +8,7 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
-import duckdb
-
+from quant_core.database import writer_connection
 from quant_core.eastmoney_source import fetch_spot_payload, parse_spot_quote, quote_to_bar
 from quant_core.market_data import MarketDataStore
 from quant_core.snapshots import SnapshotService, write_manifest
@@ -20,7 +19,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--db", required=True)
     parser.add_argument("--trade-date", required=True)
-    parser.add_argument("--tickers", required=True, help="Comma-separated monitored A-share tickers")
+    parser.add_argument("--tickers", required=True, help="Comma-separated monitored A-share or ETF tickers")
     parser.add_argument("--snapshot-id", default=None)
     parser.add_argument("--artifact-dir", default="data/spot_snapshots")
     args = parser.parse_args()
@@ -39,15 +38,14 @@ def main() -> None:
     manifest_path = Path(args.artifact_dir) / f"market_{snapshot_id}.manifest.json"
     manifest_hash = write_manifest(manifest_path, {str(artifact_path): artifact_hash, str(raw_path): raw_hash})
     now = datetime.now(timezone.utc)
-    connection = duckdb.connect(args.db)
-    SnapshotService(connection).register_market_snapshot(
-        snapshot_id, trade_date, "eastmoney_spot", now, now, str(manifest_path), manifest_hash, now
-    )
-    MarketDataStore(connection).store_bars(snapshot_id, [quote_to_bar(quote, trade_date) for quote in quotes])
-    UniverseService(connection).store_market_caps(
-        f"{snapshot_id}_market_cap", now, "eastmoney_spot", {quote.ticker: quote.total_market_cap for quote in quotes}, now
-    )
-    connection.close()
+    with writer_connection(args.db) as connection:
+        SnapshotService(connection).register_market_snapshot(
+            snapshot_id, trade_date, "eastmoney_spot", now, now, str(manifest_path), manifest_hash, now
+        )
+        MarketDataStore(connection).store_bars(snapshot_id, [quote_to_bar(quote, trade_date) for quote in quotes])
+        UniverseService(connection).store_market_caps(
+            f"{snapshot_id}_market_cap", now, "eastmoney_spot", {quote.ticker: quote.total_market_cap for quote in quotes}, now
+        )
     print(snapshot_id)
 
 

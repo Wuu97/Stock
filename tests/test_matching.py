@@ -1,7 +1,7 @@
 from datetime import date
 from decimal import Decimal
 
-from quant_core.matching import match_next_open
+from quant_core.matching import OpenGapPolicy, match_next_open
 from quant_core.models import DayBar, FeeModel, OrderIntent
 
 
@@ -25,3 +25,14 @@ def test_matching_refuses_bars_without_vendor_price_limits():
     intent = OrderIntent("i", "a", "600000.SH", date(2026, 9, 2), "BUY", 100)
     bar = DayBar(date(2026, 9, 2), "600000.SH", Decimal("10"), Decimal("10"), Decimal("10"), Decimal("10"), 10, Decimal("1000"), None, None)
     assert match_next_open(intent, bar, FEE).reason == "DATA_MISSING_PRICE_LIMIT"
+
+
+def test_matching_rejects_opening_gaps_using_only_frozen_reference_close():
+    intent = OrderIntent("i", "a", "600000.SH", date(2026, 9, 2), "BUY", 100)
+    policy = OpenGapPolicy(Decimal("0.03"), Decimal("-0.04"))
+    high_open = DayBar(date(2026, 9, 2), "600000.SH", Decimal("10.31"), Decimal("10.40"), Decimal("10.20"),
+                       Decimal("10.25"), 10, Decimal("1000"), Decimal("11"), Decimal("9"))
+    low_open = DayBar(date(2026, 9, 2), "600000.SH", Decimal("9.59"), Decimal("9.80"), Decimal("9.50"),
+                      Decimal("9.70"), 10, Decimal("1000"), Decimal("11"), Decimal("9"))
+    assert match_next_open(intent, high_open, FEE, Decimal("10"), policy).reason == "OPEN_GAP_UP_TOO_HIGH"
+    assert match_next_open(intent, low_open, FEE, Decimal("10"), policy).reason == "OPEN_GAP_DOWN_TOO_LOW"

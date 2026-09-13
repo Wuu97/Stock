@@ -7,12 +7,12 @@ from uuid import uuid4
 
 from .lots import remaining_shares
 from .models import DayBar, Disposal, Lot, OrderIntent
-from .risk import ExitRule, evaluate_exit
+from .risk import ExitPolicy, evaluate_exit
 from .settlement import SettlementService
 
 
 def create_exit_intents(connection, account_id: str, as_of_date: date, next_trading_date: date,
-                        bars: Iterable[DayBar], rule: ExitRule) -> Tuple[tuple[str, str], ...]:
+                        bars: Iterable[DayBar], rule: ExitPolicy) -> Tuple[tuple[str, str], ...]:
     """Persist one immutable sell intent per eligible holding and return (ticker, reason)."""
     if next_trading_date <= as_of_date:
         raise ValueError("next_trading_date must be after as_of_date")

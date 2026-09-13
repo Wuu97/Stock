@@ -23,3 +23,8 @@ def test_unbalanced_and_negative_journals_are_rejected():
             JournalEntry("1001", Decimal("-1"), ZERO, "bad"),
             JournalEntry("3001", ZERO, Decimal("-1"), "bad"),
         ])
+
+
+def test_zero_pnl_sale_does_not_write_an_invalid_zero_gain_entry():
+    entries = sell_entries(Decimal("100"), Decimal("100"), Decimal("0"), Decimal("0"), Decimal("0"), "512400.SH")
+    assert all(entry.account_code != "5001" for entry in entries)

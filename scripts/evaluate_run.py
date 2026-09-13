@@ -4,7 +4,7 @@ import argparse
 from datetime import datetime, timezone
 from pathlib import Path
 
-import duckdb
+from quant_core.database import writer_connection
 
 from quant_core.evaluation import EvaluationService
 from quant_core.market_data import MarketDataStore
@@ -20,7 +20,7 @@ def main() -> None:
     parser.add_argument("--evaluation-version", default="evaluation_v1")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
-    connection = duckdb.connect(args.db)
+    connection = writer_connection(args.db, transaction=False)
     summary = EvaluationService(connection).evaluate_run(
         args.run_id, MarketDataStore(connection).load_bars(args.market_snapshot_id),
         args.benchmark_ticker, args.evaluation_version,

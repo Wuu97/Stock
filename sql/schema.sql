@@ -9,6 +9,124 @@ CREATE TABLE IF NOT EXISTS sim_accounts (
     created_at TIMESTAMPTZ NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS sim_account_opening_snapshots (
+    opening_snapshot_id VARCHAR PRIMARY KEY,
+    account_id VARCHAR NOT NULL REFERENCES sim_accounts(account_id),
+    as_of_trade_date DATE NOT NULL,
+    cash_balance DECIMAL(20,4) NOT NULL CHECK (cash_balance >= 0),
+    source_artifact_path VARCHAR NOT NULL,
+    source_artifact_sha256 VARCHAR NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    UNIQUE (account_id, as_of_trade_date)
+);
+
+CREATE TABLE IF NOT EXISTS sim_margin_accounts (
+    account_id VARCHAR PRIMARY KEY REFERENCES sim_accounts(account_id),
+    annual_financing_rate DECIMAL(12,8) NOT NULL CHECK (annual_financing_rate >= 0),
+    created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sim_margin_debts (
+    debt_id VARCHAR PRIMARY KEY,
+    account_id VARCHAR NOT NULL REFERENCES sim_margin_accounts(account_id),
+    ticker VARCHAR NOT NULL,
+    opening_amount DECIMAL(20,4) NOT NULL CHECK (opening_amount >= 0),
+    outstanding_balance DECIMAL(20,4) NOT NULL CHECK (outstanding_balance >= 0),
+    last_interest_accrual_date DATE NOT NULL,
+    status VARCHAR NOT NULL CHECK (status IN ('OPEN', 'REPAID')),
+    created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sim_margin_interest_events (
+    interest_event_id VARCHAR PRIMARY KEY,
+    debt_id VARCHAR NOT NULL REFERENCES sim_margin_debts(debt_id),
+    accrual_date DATE NOT NULL,
+    annual_rate DECIMAL(12,8) NOT NULL,
+    interest_amount DECIMAL(20,4) NOT NULL CHECK (interest_amount >= 0),
+    balance_after DECIMAL(20,4) NOT NULL CHECK (balance_after >= 0),
+    created_at TIMESTAMPTZ NOT NULL,
+    UNIQUE (debt_id, accrual_date)
+);
+
+CREATE TABLE IF NOT EXISTS local_refresh_runs (
+    run_id VARCHAR PRIMARY KEY,
+    trade_date DATE NOT NULL,
+    started_at TIMESTAMPTZ NOT NULL,
+    completed_at TIMESTAMPTZ,
+    status VARCHAR NOT NULL CHECK (status IN ('RUNNING', 'SUCCEEDED', 'SKIPPED', 'FAILED')),
+    portfolio_snapshot_id VARCHAR,
+    top50_snapshot_id VARCHAR,
+    detail_json VARCHAR NOT NULL
+);
+
+-- Latest vendor-supplied display names. Trading facts retain ticker-only identity.
+CREATE TABLE IF NOT EXISTS security_master (
+    ticker VARCHAR PRIMARY KEY,
+    security_name VARCHAR NOT NULL,
+    source_channel VARCHAR NOT NULL,
+    raw_artifact_path VARCHAR NOT NULL,
+    raw_artifact_sha256 VARCHAR NOT NULL,
+    received_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    instrument_type VARCHAR NOT NULL DEFAULT 'A_SHARE' CHECK (instrument_type IN ('A_SHARE', 'ETF')),
+    settlement_cycle VARCHAR NOT NULL DEFAULT 'T1' CHECK (settlement_cycle IN ('T0', 'T1')),
+    board_lot INTEGER NOT NULL DEFAULT 100 CHECK (board_lot > 0),
+    price_tick DECIMAL(20,4) NOT NULL DEFAULT 0.0100 CHECK (price_tick > 0),
+    price_limit_ratio DECIMAL(12,8),
+    sell_stamp_duty_rate DECIMAL(12,8) NOT NULL DEFAULT 0.00050000 CHECK (sell_stamp_duty_rate >= 0)
+);
+
+CREATE TABLE IF NOT EXISTS security_listing_snapshots (
+    listing_snapshot_id VARCHAR PRIMARY KEY,
+    source_channel VARCHAR NOT NULL,
+    raw_artifact_path VARCHAR NOT NULL,
+    raw_artifact_sha256 VARCHAR NOT NULL,
+    received_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS security_listing_values (
+    listing_snapshot_id VARCHAR NOT NULL REFERENCES security_listing_snapshots(listing_snapshot_id),
+    ticker VARCHAR NOT NULL,
+    list_date DATE NOT NULL,
+    delist_date DATE,
+    list_status VARCHAR NOT NULL CHECK (list_status IN ('L', 'D', 'P')),
+    PRIMARY KEY (listing_snapshot_id, ticker)
+);
+
+CREATE TABLE IF NOT EXISTS st_history_backfill_runs (
+    backfill_run_id VARCHAR PRIMARY KEY,
+    source_channel VARCHAR NOT NULL,
+    start_trade_date DATE NOT NULL,
+    end_trade_date DATE NOT NULL,
+    source_policy_version VARCHAR NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS st_history_backfill_state (
+    backfill_run_id VARCHAR NOT NULL REFERENCES st_history_backfill_runs(backfill_run_id),
+    ticker VARCHAR NOT NULL,
+    status VARCHAR NOT NULL CHECK (status IN ('RUNNING', 'SUCCEEDED', 'FAILED')),
+    attempt_count INTEGER NOT NULL CHECK (attempt_count > 0),
+    row_count INTEGER,
+    raw_artifact_path VARCHAR,
+    raw_artifact_sha256 VARCHAR,
+    error_text VARCHAR,
+    updated_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (backfill_run_id, ticker)
+);
+
+CREATE TABLE IF NOT EXISTS st_history_daily (
+    backfill_run_id VARCHAR NOT NULL REFERENCES st_history_backfill_runs(backfill_run_id),
+    ticker VARCHAR NOT NULL,
+    trade_date DATE NOT NULL,
+    is_st BOOLEAN NOT NULL,
+    raw_artifact_path VARCHAR NOT NULL,
+    raw_artifact_sha256 VARCHAR NOT NULL,
+    received_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (backfill_run_id, ticker, trade_date)
+);
+
 CREATE TABLE IF NOT EXISTS market_data_snapshots (
     market_snapshot_id VARCHAR PRIMARY KEY,
     trade_date DATE NOT NULL,
@@ -77,7 +195,8 @@ CREATE TABLE IF NOT EXISTS universe_snapshots (
     market_cap_snapshot_id VARCHAR NOT NULL REFERENCES market_cap_snapshots(market_cap_snapshot_id),
     rule_version VARCHAR NOT NULL,
     rule_json VARCHAR NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL
+    created_at TIMESTAMPTZ NOT NULL,
+    listing_snapshot_id VARCHAR REFERENCES security_listing_snapshots(listing_snapshot_id)
 );
 
 CREATE TABLE IF NOT EXISTS universe_members (
@@ -445,6 +564,17 @@ CREATE TABLE IF NOT EXISTS news_assessments (
     created_at TIMESTAMPTZ NOT NULL
 );
 
+-- Human review is append-only: a later correction never overwrites the model result
+-- or a previous reviewer decision.
+CREATE TABLE IF NOT EXISTS news_risk_review_events (
+    review_event_id VARCHAR PRIMARY KEY,
+    assessment_id VARCHAR NOT NULL REFERENCES news_assessments(assessment_id),
+    review_label VARCHAR NOT NULL CHECK (review_label IN ('CONFIRMED_RISK', 'FALSE_POSITIVE', 'UNCERTAIN')),
+    reviewer VARCHAR NOT NULL,
+    rationale TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+);
+
 -- Versioned reference data. News hypotheses may only reference codes in this table.
 CREATE TABLE IF NOT EXISTS sw_industry_taxonomy (
     taxonomy_version VARCHAR NOT NULL,
@@ -462,6 +592,45 @@ CREATE TABLE IF NOT EXISTS security_industry_memberships (
     valid_to DATE,
     PRIMARY KEY (taxonomy_version, ticker, valid_from),
     FOREIGN KEY (taxonomy_version, industry_code) REFERENCES sw_industry_taxonomy(taxonomy_version, industry_code)
+);
+
+CREATE TABLE IF NOT EXISTS strategy_sleeve_snapshots (
+    sleeve_snapshot_id VARCHAR PRIMARY KEY,
+    group_name VARCHAR NOT NULL,
+    as_of_trade_date DATE NOT NULL,
+    config_path VARCHAR NOT NULL,
+    config_sha256 VARCHAR NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS strategy_sleeve_assignments (
+    sleeve_snapshot_id VARCHAR NOT NULL REFERENCES strategy_sleeve_snapshots(sleeve_snapshot_id),
+    ticker VARCHAR NOT NULL,
+    sleeve VARCHAR NOT NULL CHECK (sleeve IN ('TACTICAL', 'TREND', 'CORE_CANDIDATE')),
+    review_interval_days INTEGER NOT NULL CHECK (review_interval_days > 0),
+    max_holding_days INTEGER NOT NULL CHECK (max_holding_days > 0),
+    assignment_source VARCHAR NOT NULL CHECK (assignment_source IN ('CONFIG_OVERRIDE', 'INSTRUMENT_DEFAULT')),
+    rationale VARCHAR NOT NULL,
+    PRIMARY KEY (sleeve_snapshot_id, ticker)
+);
+
+CREATE TABLE IF NOT EXISTS preliminary_universe_snapshots (
+    preliminary_snapshot_id VARCHAR PRIMARY KEY,
+    as_of_trade_date DATE NOT NULL UNIQUE,
+    source_channel VARCHAR NOT NULL,
+    lookback_days INTEGER NOT NULL CHECK (lookback_days > 1),
+    min_average_amount DECIMAL(20,4) NOT NULL CHECK (min_average_amount > 0),
+    classification_status VARCHAR NOT NULL CHECK (classification_status = 'PRELIMINARY'),
+    exclusions_json VARCHAR NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS preliminary_universe_members (
+    preliminary_snapshot_id VARCHAR NOT NULL REFERENCES preliminary_universe_snapshots(preliminary_snapshot_id),
+    ticker VARCHAR NOT NULL,
+    average_amount DECIMAL(20,4) NOT NULL,
+    observed_days INTEGER NOT NULL CHECK (observed_days > 0),
+    PRIMARY KEY (preliminary_snapshot_id, ticker)
 );
 
 CREATE TABLE IF NOT EXISTS macro_event_hypotheses (
@@ -504,5 +673,17 @@ CREATE TABLE IF NOT EXISTS macro_event_impacts (
 CREATE TABLE IF NOT EXISTS recommendation_run_modes (
     run_id VARCHAR PRIMARY KEY REFERENCES recommendation_runs(run_id),
     execution_mode VARCHAR NOT NULL CHECK (execution_mode IN ('PRODUCTION', 'SHADOW')),
+    created_at TIMESTAMPTZ NOT NULL
+);
+
+-- Every deployable ML artifact is registered before it may create a shadow run.
+CREATE TABLE IF NOT EXISTS ml_model_runs (
+    model_sha256 VARCHAR PRIMARY KEY,
+    model_type VARCHAR NOT NULL,
+    artifact_path VARCHAR NOT NULL,
+    trained_through_date DATE NOT NULL,
+    training_rows BIGINT NOT NULL CHECK (training_rows > 0),
+    source_dataset_sha256 VARCHAR NOT NULL,
+    parameters_json VARCHAR NOT NULL,
     created_at TIMESTAMPTZ NOT NULL
 );

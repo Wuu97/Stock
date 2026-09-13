@@ -56,6 +56,24 @@ def fetch_daily_limits(token: str, trade_dates: Sequence[date]) -> Tuple[DailyLi
     return tuple(row_to_daily_limit(row) for row in fetch_daily_limit_records(token, trade_dates))
 
 
+def fetch_etf_limit_records(token: str, tickers: Sequence[str], start: date, end: date) -> Tuple[Mapping[str, object], ...]:
+    """Fetch the 2,000-point ETF limit-price endpoint for a narrow ETF universe."""
+    if not token:
+        raise ValueError("Tushare token cannot be empty")
+    if start > end:
+        raise ValueError("ETF limit start date cannot be after end date")
+    client = create_tushare_client(token)
+    records = []
+    for ticker in sorted(set(tickers)):
+        frame = client.etf_limit(ts_code=ticker, start_date=start.strftime("%Y%m%d"), end_date=end.strftime("%Y%m%d"),
+                                 fields="ts_code,trade_date,up_limit,down_limit")
+        required = {"trade_date", "ts_code", "up_limit", "down_limit"}
+        if not required.issubset(frame.columns):
+            raise RuntimeError("Tushare etf_limit response is missing required fields")
+        records.extend(frame.to_dict("records"))
+    return tuple(records)
+
+
 def create_tushare_client(token: str):
     """Create the authenticated Tushare client used by all vendor adapters."""
     if not token:

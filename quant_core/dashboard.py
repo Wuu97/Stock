@@ -1,6 +1,7 @@
 """Read-only dashboard queries for the paper-trading monitor."""
 
 from decimal import Decimal
+import json
 
 
 def load_dashboard(connection, account_id: str) -> dict:
@@ -10,6 +11,11 @@ def load_dashboard(connection, account_id: str) -> dict:
     ).fetchone()
     if account is None:
         raise ValueError("simulation account is missing")
+    margin = connection.execute(
+        "SELECT m.annual_financing_rate, COALESCE(SUM(d.outstanding_balance), 0) "
+        "FROM sim_margin_accounts m LEFT JOIN sim_margin_debts d ON d.account_id = m.account_id AND d.status = 'OPEN' "
+        "WHERE m.account_id = ? GROUP BY m.annual_financing_rate", [account_id]
+    ).fetchone()
     positions = connection.execute(
         "WITH disposed AS ("
         "  SELECT lot_id, SUM(shares_deducted) AS shares FROM sim_lot_disposal_events GROUP BY lot_id"
@@ -22,14 +28,16 @@ def load_dashboard(connection, account_id: str) -> dict:
         "  SELECT ticker, close, trade_date, ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY trade_date DESC) AS row_no "
         "  FROM daily_bars"
         ") "
-        "SELECT i.ticker, i.shares, i.cost, p.close, p.trade_date "
+        "SELECT i.ticker, COALESCE(s.security_name, i.ticker), i.shares, i.cost, p.close, p.trade_date "
         "FROM inventory i LEFT JOIN latest_price p ON p.ticker = i.ticker AND p.row_no = 1 "
+        "LEFT JOIN security_master s ON s.ticker = i.ticker "
         "WHERE i.shares > 0 ORDER BY i.ticker",
         [account_id],
     ).fetchall()
     pending = connection.execute(
-        "SELECT o.ticker, e.trigger_code, o.target_trade_date FROM sim_order_intents o "
+        "SELECT o.ticker, COALESCE(s.security_name, o.ticker), e.trigger_code, o.target_trade_date FROM sim_order_intents o "
         "JOIN sim_exit_signals e ON e.intent_id = o.intent_id "
+        "LEFT JOIN security_master s ON s.ticker = o.ticker "
         "WHERE o.account_id = ? AND o.order_status = 'PENDING' ORDER BY o.target_trade_date, o.ticker",
         [account_id],
     ).fetchall()
@@ -37,36 +45,79 @@ def load_dashboard(connection, account_id: str) -> dict:
         "SELECT trade_date, cash_balance, securities_value, total_equity, unit_nav, max_drawdown FROM sim_nav_daily "
         "WHERE account_id = ? ORDER BY trade_date DESC LIMIT 60", [account_id]
     ).fetchall()
+    refresh = connection.execute(
+        "SELECT trade_date, completed_at, status, portfolio_snapshot_id, top50_snapshot_id, detail_json "
+        "FROM local_refresh_runs ORDER BY started_at DESC LIMIT 1"
+    ).fetchone()
     recommendations = connection.execute(
-        "SELECT r.target_trade_date, i.ticker, i.rank_order, i.rank_score, i.ref_close_unadj, "
+        "SELECT r.target_trade_date, i.ticker, COALESCE(s.security_name, i.ticker), i.rank_order, i.rank_score, i.ref_close_unadj, "
         "COALESCE(m.execution_mode, 'PRODUCTION') "
         "FROM recommendation_runs r JOIN recommendation_items i ON i.run_id = r.run_id "
         "LEFT JOIN recommendation_run_modes m ON m.run_id = r.run_id "
+        "LEFT JOIN security_master s ON s.ticker = i.ticker "
         "WHERE r.run_status = 'FROZEN' ORDER BY r.target_trade_date DESC, i.rank_order LIMIT 20"
     ).fetchall()
+    ml_model = connection.execute(
+        "SELECT model_sha256, model_type, artifact_path, trained_through_date, training_rows, created_at "
+        "FROM ml_model_runs ORDER BY created_at DESC LIMIT 1"
+    ).fetchone()
+    ml_recommendations = connection.execute(
+        "SELECT r.target_trade_date, i.ticker, COALESCE(s.security_name, i.ticker), i.rank_order, i.rank_score "
+        "FROM recommendation_runs r JOIN recommendation_items i ON i.run_id = r.run_id "
+        "LEFT JOIN security_master s ON s.ticker = i.ticker WHERE r.strategy_id = 'ml_excess_return_shadow_v1' "
+        "AND r.run_status = 'FROZEN' ORDER BY r.target_trade_date DESC, i.rank_order LIMIT 5"
+    ).fetchall()
+    summary = _summary(connection, account_id, nav)
+    margin_view = None
+    if margin is not None:
+        accrued_interest = connection.execute(
+            "SELECT COALESCE(SUM(e.interest_amount), 0) FROM sim_margin_interest_events e "
+            "JOIN sim_margin_debts d ON d.debt_id = e.debt_id WHERE d.account_id = ?", [account_id]
+        ).fetchone()[0]
+        debt_balance = _number(margin[1])
+        # A collateral ratio is meaningful only after a daily valuation has priced every position.
+        collateral_assets = None if not nav else summary["equity"] + debt_balance
+        margin_view = {
+            "annual_financing_rate": _number(margin[0]),
+            "debt_balance": debt_balance,
+            "accrued_interest": _number(accrued_interest),
+            "net_assets": None if not nav else summary["equity"],
+            "collateral_assets": collateral_assets,
+            "maintenance_ratio": None if not debt_balance or collateral_assets is None else collateral_assets / debt_balance,
+        }
     return {
         "account": {"id": account_id, "name": account[0], "initial_cash": _number(account[1])},
-        "summary": _summary(connection, account_id, nav),
+        "margin": margin_view,
+        "local_refresh": None if refresh is None else {
+            "trade_date": str(refresh[0]), "completed_at": str(refresh[1]) if refresh[1] else None,
+            "status": refresh[2], "portfolio_snapshot_id": refresh[3], "top50_snapshot_id": refresh[4],
+            "detail": refresh[5],
+        },
+        "summary": summary,
         "positions": [
             {
-                "ticker": ticker, "shares": shares, "cost": _number(cost), "last_close": _number(close),
+                "ticker": ticker, "security_name": name, "shares": shares, "cost": _number(cost), "last_close": _number(close),
                 "price_date": str(price_date) if price_date else None,
                 "unrealized_return": _return(close, cost, shares),
             }
-            for ticker, shares, cost, close, price_date in positions
+            for ticker, name, shares, cost, close, price_date in positions
         ],
         "pending_exits": [
-            {"ticker": ticker, "trigger": trigger, "target_date": str(target_date)}
-            for ticker, trigger, target_date in pending
+            {"ticker": ticker, "security_name": name, "trigger": trigger, "target_date": str(target_date)}
+            for ticker, name, trigger, target_date in pending
         ],
         "nav": [
             {"date": str(day), "cash": _number(cash), "market_value": _number(value), "equity": _number(equity), "unit_nav": _number(unit_nav), "drawdown": _number(drawdown)}
             for day, cash, value, equity, unit_nav, drawdown in reversed(nav)
         ],
         "recommendations": [
-            {"scope": "事件影子" if mode == "SHADOW" else "生产基线", "target_date": str(day), "ticker": ticker, "rank": rank, "score": _number(score), "reference_close": _number(close)}
-            for day, ticker, rank, score, close, mode in recommendations
+            {"scope": "事件影子" if mode == "SHADOW" else "生产基线", "target_date": str(day), "ticker": ticker, "security_name": name, "rank": rank, "score": _number(score), "reference_close": _number(close)}
+            for day, ticker, name, rank, score, close, mode in recommendations
         ],
+        "ml_shadow": {"model": None if ml_model is None else {"sha256": ml_model[0], "type": ml_model[1], "artifact_path": ml_model[2],
+                       "trained_through_date": str(ml_model[3]), "training_rows": ml_model[4], "created_at": str(ml_model[5])},
+                      "recommendations": [{"target_date": str(day), "ticker": ticker, "security_name": name, "rank": rank, "score": _number(score)}
+                                          for day, ticker, name, rank, score in ml_recommendations]},
         "exit_rules": {"stop_loss": -0.10, "take_profit_gate": 0.15, "trailing_drawdown": 0.05, "max_holding_days": 60},
     }
 
@@ -85,20 +136,22 @@ def _summary(connection, account_id, nav):
 def load_activity(connection, account_id: str) -> dict:
     """Return immutable order, execution and rejection records for presentation."""
     orders = connection.execute(
-        "SELECT target_trade_date, ticker, direction, target_shares, order_status, reject_reason_code "
-        "FROM sim_order_intents WHERE account_id = ? ORDER BY created_at DESC LIMIT 100", [account_id]
+        "SELECT o.target_trade_date, o.ticker, COALESCE(s.security_name, o.ticker), o.direction, o.target_shares, o.order_status, o.reject_reason_code "
+        "FROM sim_order_intents o LEFT JOIN security_master s ON s.ticker = o.ticker "
+        "WHERE o.account_id = ? ORDER BY o.created_at DESC LIMIT 100", [account_id]
     ).fetchall()
     executions = connection.execute(
-        "SELECT trade_date, ticker, direction, deal_price_unadj, deal_shares, gross_amount "
-        "FROM sim_executions WHERE account_id = ? ORDER BY created_at DESC LIMIT 100", [account_id]
+        "SELECT e.trade_date, e.ticker, COALESCE(s.security_name, e.ticker), e.direction, e.deal_price_unadj, e.deal_shares, e.gross_amount "
+        "FROM sim_executions e LEFT JOIN security_master s ON s.ticker = e.ticker "
+        "WHERE e.account_id = ? ORDER BY e.created_at DESC LIMIT 100", [account_id]
     ).fetchall()
     rejects = connection.execute(
         "SELECT COALESCE(reject_reason_code, 'UNKNOWN'), COUNT(*) FROM sim_order_intents "
         "WHERE account_id = ? AND order_status = 'REJECTED' GROUP BY 1 ORDER BY 2 DESC", [account_id]
     ).fetchall()
     return {
-        "orders": [dict(zip(("date", "ticker", "direction", "shares", "status", "reason"), map(_display, row))) for row in orders],
-        "executions": [dict(zip(("date", "ticker", "direction", "price", "shares", "amount"), map(_display, row))) for row in executions],
+        "orders": [dict(zip(("date", "ticker", "security_name", "direction", "shares", "status", "reason"), map(_display, row))) for row in orders],
+        "executions": [dict(zip(("date", "ticker", "security_name", "direction", "price", "shares", "amount"), map(_display, row))) for row in executions],
         "reject_reasons": [{"reason": reason, "count": count} for reason, count in rejects],
     }
 
@@ -162,6 +215,18 @@ def load_news_monitor(connection, limit: int = 50) -> dict:
     hypotheses_by_cluster = {}
     for cluster_id, hypothesis_id in cluster_hypotheses:
         hypotheses_by_cluster.setdefault(cluster_id, []).append(hypothesis_id)
+    risk_rows = connection.execute(
+        "WITH latest_review AS ("
+        " SELECT assessment_id, review_label, reviewer, rationale, created_at, "
+        " ROW_NUMBER() OVER (PARTITION BY assessment_id ORDER BY created_at DESC, review_event_id DESC) AS row_no "
+        " FROM news_risk_review_events"
+        ") SELECT a.assessment_id, n.ticker, n.headline, a.result_json, a.created_at, "
+        " r.review_label, r.reviewer, r.rationale, r.created_at FROM news_assessments a "
+        "JOIN news_documents n ON n.document_id = a.document_id "
+        "LEFT JOIN latest_review r ON r.assessment_id = a.assessment_id AND r.row_no = 1 "
+        "WHERE a.task_type = 'RISK_VETO' ORDER BY a.created_at DESC LIMIT ?", [limit]
+    ).fetchall()
+    review_summary = _risk_review_summary(connection)
     return {
         "documents": [{"id": doc_id, "source": source, "published_at": str(published), "received_at": str(received),
                        "headline": headline, "url": url, "artifact_sha256": artifact}
@@ -178,7 +243,25 @@ def load_news_monitor(connection, limit: int = 50) -> dict:
                       "representative_count": representative_count, "excluded_count": excluded_count,
                       "hypothesis_ids": hypotheses_by_cluster.get(cluster_id, [])}
                      for cluster_id, algorithm, earliest, latest, document_count, representative_count, excluded_count in clusters],
+        "risk_assessments": [{"assessment_id": assessment_id, "ticker": ticker, "headline": headline,
+                              "created_at": str(created), "result": json.loads(result_json),
+                              "review": None if label is None else {"label": label, "reviewer": reviewer,
+                              "rationale": rationale, "created_at": str(reviewed_at)}}
+                             for assessment_id, ticker, headline, result_json, created, label, reviewer, rationale, reviewed_at in risk_rows],
+        "risk_review_summary": review_summary,
     }
+
+
+def _risk_review_summary(connection) -> dict:
+    """Dashboard-only aggregate; facts and review events remain immutable."""
+    table_exists = connection.execute(
+        "SELECT 1 FROM information_schema.tables WHERE table_name = 'news_risk_review_events'"
+    ).fetchone()
+    if table_exists is None:
+        return {"high_assessment_count": 0, "reviewed_high_count": 0, "confirmed_risk_count": 0,
+                "false_positive_count": 0, "uncertain_count": 0, "review_precision": None}
+    from quant_core.news_risk_review import review_metrics
+    return review_metrics(connection)
 
 
 def _return(close, cost, shares):

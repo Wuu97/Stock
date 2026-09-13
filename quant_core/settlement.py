@@ -8,8 +8,10 @@ from uuid import uuid4
 
 from .ledger import buy_entries, initial_funding, journal_rows, sell_entries
 from .lots import fifo_allocate, money, remaining_shares
-from .matching import match_next_open
+from .matching import OpenGapPolicy, match_next_open
+from .margin import accrue_financing_interest, margin_debt_balance
 from .models import DayBar, Disposal, FeeModel, Lot, OrderIntent
+from .security_rules import execution_rules
 
 
 class SettlementService:
@@ -46,20 +48,29 @@ class SettlementService:
         """Return ledger-derived cash for decision-time portfolio construction."""
         return self._cash(account_id)
 
-    def settle(self, intent: OrderIntent, bar: DayBar, next_trading_day: date, fee: FeeModel) -> str:
+    def settle(self, intent: OrderIntent, bar: DayBar, next_trading_day: date, fee: FeeModel,
+               reference_close: Optional[Decimal] = None,
+               open_gap_policy: Optional[OpenGapPolicy] = None) -> str:
         self._validate_pending_intent(intent)
-        result = match_next_open(intent, bar, fee)
+        rules = execution_rules(self.connection, intent.ticker)
+        if intent.shares % rules.board_lot:
+            self._reject(intent.intent_id, "INVALID_BOARD_LOT")
+            return "REJECTED"
+        fee = rules.fee(fee)
+        result = match_next_open(intent, bar, fee, reference_close, open_gap_policy)
         if not result.accepted:
             self._reject(intent.intent_id, result.reason)
             return "REJECTED"
         if intent.direction == "BUY":
-            return self._settle_buy(intent, result, next_trading_day, fee.version)
+            available_from = intent.target_trade_date if rules.settlement_cycle == "T0" else next_trading_day
+            return self._settle_buy(intent, result, available_from, fee.version)
         return self._settle_sell(intent, result, fee.version)
 
     def value_day(self, account_id: str, trade_date: date, closing_prices: Dict[str, Decimal],
                   suspended_tickers: Optional[Set[str]] = None,
                   last_official_closes: Optional[Mapping[str, Tuple[date, Decimal]]] = None) -> None:
         """Mark positions from official closes, carrying only officially suspended symbols."""
+        accrue_financing_interest(self.connection, account_id, trade_date)
         lots, disposals = self._load_inventory(account_id)
         by_ticker: Dict[str, List[Lot]] = {}
         for lot in lots:
@@ -93,7 +104,7 @@ class SettlementService:
                     "INSERT OR REPLACE INTO sim_positions_daily VALUES (?, ?, ?, ?, ?, ?)",
                     [account_id, trade_date, ticker, remaining, available, cost],
                 )
-            total = money(cash + securities_value)
+            total = money(cash + securities_value - margin_debt_balance(self.connection, account_id))
             initial = self.connection.execute("SELECT initial_cash FROM sim_accounts WHERE account_id = ?", [account_id]).fetchone()[0]
             previous = self.connection.execute("SELECT MAX(total_equity) FROM sim_nav_daily WHERE account_id = ?", [account_id]).fetchone()[0]
             high_water = max(Decimal(str(previous)) if previous is not None else total, total)

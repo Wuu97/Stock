@@ -5,7 +5,7 @@ from pathlib import Path
 import duckdb
 
 from quant_core.models import DayBar
-from quant_core.universe import DynamicUniverseRule, UniverseService, select_dynamic_universe
+from quant_core.universe import DynamicUniverseRule, FixedUniverseRule, LiquidityUniverseRule, UniverseService, select_dynamic_universe, select_liquidity_universe
 
 
 def _bar(day, ticker, close):
@@ -25,6 +25,35 @@ def test_dynamic_universe_uses_current_cap_and_historical_30_day_return():
     assert [member.ticker for member in members] == ["AAA", "BBB"]
 
 
+def test_liquidity_universe_respects_cap_range_amount_and_momentum_filters():
+    start = date(2026, 7, 1)
+    bars = []
+    for index in range(21):
+        bars.extend([
+            DayBar(start + timedelta(days=index), "HOT", Decimal("10"), Decimal("10"), Decimal("10"), Decimal("10") + index / Decimal("2"), 100, Decimal("200000000"), Decimal("20"), Decimal("1")),
+            DayBar(start + timedelta(days=index), "ILLIQUID", Decimal("10"), Decimal("10"), Decimal("10"), Decimal("10") + index / Decimal("2"), 100, Decimal("1000000"), Decimal("20"), Decimal("1")),
+            DayBar(start + timedelta(days=index), "LARGE", Decimal("10"), Decimal("10"), Decimal("10"), Decimal("10") + index / Decimal("2"), 100, Decimal("200000000"), Decimal("20"), Decimal("1")),
+        ])
+    rule = LiquidityUniverseRule("event", Decimal("2000000000"), Decimal("80000000000"), 20,
+                                 Decimal("100000000"), 5, Decimal("0.05"), 10)
+    members = select_liquidity_universe(bars, {"HOT": Decimal("5000000000"), "ILLIQUID": Decimal("5000000000"),
+                                                "LARGE": Decimal("90000000000")}, start + timedelta(days=20), rule)
+    assert [member.ticker for member in members] == ["HOT"]
+
+
+def test_listing_age_gate_uses_trading_days_and_fails_closed_when_missing():
+    start = date(2026, 7, 1)
+    days = [start + timedelta(days=index) for index in range(21)]
+    bars = [_bar(day, "OLD", Decimal("10") + index) for index, day in enumerate(days)]
+    bars.extend(_bar(day, "NEW", Decimal("10") + index) for index, day in enumerate(days))
+    rule = DynamicUniverseRule("age_gate", Decimal("1"), 5, 10, min_listing_trading_days=20)
+    members = select_dynamic_universe(
+        bars, {"OLD": Decimal("10"), "NEW": Decimal("10"), "UNKNOWN": Decimal("10")}, days[-1], rule,
+        {"OLD": start, "NEW": days[10]}, days,
+    )
+    assert [member.ticker for member in members] == ["OLD"]
+
+
 def test_dynamic_universe_members_are_snapshotted_in_the_database():
     con = duckdb.connect(":memory:")
     con.execute(Path("sql/schema.sql").read_text())
@@ -40,6 +69,19 @@ def test_dynamic_universe_members_are_snapshotted_in_the_database():
     stored = con.execute("SELECT group_name, rule_json FROM universe_snapshots WHERE universe_snapshot_id = ?", [snapshot_id]).fetchone()
     assert stored[0] == "large_cap_momentum"
     assert '"minimum_total_market_cap": "80000000000"' in stored[1]
+
+
+def test_empty_dynamic_universe_remains_a_valid_empty_snapshot():
+    con = duckdb.connect(":memory:")
+    con.execute(Path("sql/schema.sql").read_text())
+    service = UniverseService(con)
+    now = datetime.now(timezone.utc)
+    service.store_market_caps("cap", now, "fixture", {"AAA": Decimal("10")}, now)
+    bars = [_bar(date(2026, 9, 9), "AAA", Decimal("10")), _bar(date(2026, 9, 10), "AAA", Decimal("11"))]
+    snapshot_id = service.create_snapshot(
+        "cap", date(2026, 9, 10), DynamicUniverseRule("empty", Decimal("100"), 1, 10), bars, now,
+    )
+    assert service.member_tickers(snapshot_id) == set()
 
 
 def test_multiple_group_snapshots_remain_independent():
@@ -83,3 +125,18 @@ def test_universe_service_loads_members_by_their_historical_trade_date():
     by_date = service.members_by_trade_date("large_cap_momentum", date(2026, 8, 31), date(2026, 9, 1))
     assert by_date[date(2026, 8, 31)] == {"BBB"}
     assert by_date[date(2026, 9, 1)] == {"BBB"}
+
+
+def test_fixed_universe_is_explicit_and_retains_market_cap_snapshot_lineage():
+    con = duckdb.connect(":memory:")
+    con.execute(Path("sql/schema.sql").read_text())
+    service = UniverseService(con)
+    now = datetime.now(timezone.utc)
+    service.store_market_caps("cap", now, "fixture", {"AAA": Decimal("10"), "BBB": Decimal("20")}, now)
+    snapshot_id = service.create_fixed_snapshot(
+        "cap", date(2026, 9, 10), FixedUniverseRule("current_holdings", ["BBB", "AAA", "BBB"]), now,
+    )
+    assert service.member_tickers(snapshot_id) == {"AAA", "BBB"}
+    stored = con.execute("SELECT rule_version, rule_json FROM universe_snapshots WHERE universe_snapshot_id = ?", [snapshot_id]).fetchone()
+    assert stored[0] == "fixed_tickers_v1"
+    assert '"membership": "fixed"' in stored[1]

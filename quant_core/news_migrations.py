@@ -41,3 +41,12 @@ def apply_news_migrations(connection) -> None:
         "WHEN 'akshare_stock_news_em' THEN 'FINANCIAL_MEDIA' WHEN 'akshare_stock_notice_report' THEN 'OFFICIAL_DISCLOSURE' "
         "WHEN 'native_rss_un_news' THEN 'OFFICIAL_INSTITUTION' ELSE source_type END WHERE source_type IS NULL"
     )
+    tables = {row[0] for row in connection.execute("SHOW TABLES").fetchall()}
+    if "news_assessments" in tables:
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS news_risk_review_events ("
+            "review_event_id VARCHAR PRIMARY KEY, "
+            "assessment_id VARCHAR NOT NULL REFERENCES news_assessments(assessment_id), "
+            "review_label VARCHAR NOT NULL CHECK (review_label IN ('CONFIRMED_RISK', 'FALSE_POSITIVE', 'UNCERTAIN')), "
+            "reviewer VARCHAR NOT NULL, rationale TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL)"
+        )

@@ -14,7 +14,7 @@ import json
 import os
 from pathlib import Path
 
-import duckdb
+from quant_core.database import writer_connection
 import tushare as ts
 
 from quant_core.environment import load_env_file
@@ -74,6 +74,32 @@ def _adjusted_dates(path: Path) -> set[str]:
         return {row["trade_date"] for row in csv.DictReader(source)}
 
 
+def _merge_existing_adjusted_rows(target_path: Path, source_path: Path, valid_days: set[str]) -> None:
+    """Reuse previously archived adjusted prices without re-fetching market facts.
+
+    The daily-bar snapshot is the primary immutable fact.  A later research
+    universe can therefore reuse an already archived adjusted-price derivative
+    only for dates inside its requested calendar, while preserving rows it has
+    already produced itself.
+    """
+    if not source_path.exists():
+        return
+    written_dates = _adjusted_dates(target_path)
+    needed_dates = valid_days - written_dates
+    if not needed_dates:
+        return
+    write_header = not target_path.exists()
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    with source_path.open(encoding="utf-8", newline="") as source, target_path.open("a", encoding="utf-8", newline="") as target:
+        reader = csv.DictReader(source)
+        writer = csv.DictWriter(target, fieldnames=("trade_date", "ticker", "adj_close"))
+        if write_header:
+            writer.writeheader()
+        for row in reader:
+            if row["trade_date"] in needed_dates:
+                writer.writerow({name: row[name] for name in writer.fieldnames})
+
+
 def _push_rolling(rolling_bars: list[DayBar], bars: list[DayBar], momentum_days: int) -> list[DayBar]:
     combined = rolling_bars + bars
     keep_dates = sorted({bar.trade_date for bar in combined})[-(momentum_days + 1):]
@@ -90,6 +116,8 @@ def main() -> None:
     parser.add_argument("--momentum-days", type=int, default=30)
     parser.add_argument("--top-n", type=int, default=50)
     parser.add_argument("--artifact-dir", default="data/ml_history")
+    parser.add_argument("--existing-adjusted-csv", default="data/ml_history/adjusted_closes.csv",
+                        help="Previously archived adjusted prices that may be reused for existing daily snapshots")
     parser.add_argument("--max-days", type=int, help="Safe bounded run for testing or incremental backfill")
     args = parser.parse_args()
     start, end = date.fromisoformat(args.start_date), date.fromisoformat(args.end_date)
@@ -108,15 +136,15 @@ def main() -> None:
     if first_target is None:
         raise ValueError("no trading dates in requested range")
     days = all_days[max(0, first_target - args.momentum_days):]
-    if args.max_days:
-        days = days[:args.max_days]
     if not days:
         raise ValueError("no trading dates in requested range")
     rule = DynamicUniverseRule(args.group_name, Decimal(args.min_total_market_cap), args.momentum_days, args.top_n,
                                "historical_pit_cap_momentum_v1")
     artifact_dir, adjusted_path = Path(args.artifact_dir), Path(args.artifact_dir) / "adjusted_closes.csv"
     artifact_dir.mkdir(parents=True, exist_ok=True)
-    connection = duckdb.connect(args.db)
+    _merge_existing_adjusted_rows(adjusted_path, Path(args.existing_adjusted_csv),
+                                  {day.strftime("%Y%m%d") for day in days})
+    connection = writer_connection(args.db, transaction=False)
     completed, written_dates = 0, _adjusted_dates(adjusted_path)
     try:
         market_data, snapshots, universes = MarketDataStore(connection), SnapshotService(connection), UniverseService(connection)
@@ -126,7 +154,28 @@ def main() -> None:
             existing = connection.execute("SELECT 1 FROM market_data_snapshots WHERE market_snapshot_id = ?", [snapshot_id]).fetchone()
             if existing:
                 rolling_bars = _push_rolling(rolling_bars, market_data.load_bars(snapshot_id), args.momentum_days)
+                universe_exists = connection.execute(
+                    "SELECT 1 FROM universe_snapshots WHERE group_name = ? AND as_of_trade_date = ?",
+                    [rule.group_name, trade_date],
+                ).fetchone()
+                if not universe_exists and len({bar.trade_date for bar in rolling_bars}) >= args.momentum_days + 1:
+                    cap_exists = connection.execute(
+                        "SELECT 1 FROM market_cap_snapshots WHERE market_cap_snapshot_id = ?", [cap_id],
+                    ).fetchone()
+                    if not cap_exists:
+                        raise RuntimeError(f"existing daily snapshot is missing market-cap facts for {trade_date}")
+                    connection.execute("BEGIN")
+                    try:
+                        universes.create_snapshot(cap_id, trade_date, rule, rolling_bars, datetime.now(timezone.utc))
+                        connection.execute("COMMIT")
+                    except Exception:
+                        connection.execute("ROLLBACK")
+                        raise
                 continue
+            # Limit newly completed dates, not calendar dates.  This keeps a
+            # bounded run resumable after earlier dates have already landed.
+            if args.max_days and completed >= args.max_days:
+                break
             day_value = trade_date.strftime("%Y%m%d")
             daily_all = _require_columns(client.daily(trade_date=day_value, fields="ts_code,trade_date,open,high,low,close,vol,amount"),
                                          {"ts_code", "trade_date", "open", "high", "low", "close", "vol", "amount"}, "daily")

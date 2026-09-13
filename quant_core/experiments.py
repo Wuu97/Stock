@@ -1,6 +1,6 @@
 """Immutable strategy-experiment definitions and ledger-derived performance metrics."""
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
 from hashlib import sha256
@@ -9,8 +9,9 @@ from math import sqrt
 from typing import Iterable, Optional, Sequence
 
 from .models import DayBar
+from .matching import OpenGapPolicy
 from .portfolio import PortfolioPolicy
-from .risk import ExitRule
+from .risk import ExitPolicy
 from .strategy_research import StrategySpec
 
 
@@ -26,7 +27,7 @@ class BenchmarkClose:
 class ExperimentSpec:
     strategy: StrategySpec
     portfolio: PortfolioPolicy
-    exit_rule: ExitRule
+    exit_rule: ExitPolicy
     cost_model_version: str
     start_date: date
     end_date: date
@@ -35,6 +36,7 @@ class ExperimentSpec:
     benchmark_ticker: str
     benchmark_data_reference: str
     initial_cash: Decimal
+    open_gap_policy: OpenGapPolicy = field(default_factory=OpenGapPolicy)
 
     def __post_init__(self) -> None:
         if (self.start_date > self.end_date or not self.market_snapshot_ids or not self.cost_model_version
@@ -50,6 +52,7 @@ class ExperimentSpec:
             "benchmark_ticker": self.benchmark_ticker,
             "benchmark_data_reference": self.benchmark_data_reference,
             "initial_cash": str(self.initial_cash),
+            "open_gap_policy": _jsonable(asdict(self.open_gap_policy)),
         }
         return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 

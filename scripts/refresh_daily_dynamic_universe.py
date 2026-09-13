@@ -8,9 +8,9 @@ import json
 import os
 from pathlib import Path
 
-import duckdb
 import tushare as ts
 
+from quant_core.database import read_connection, writer_connection
 from quant_core.environment import load_env_file
 from quant_core.market_data import MarketDataStore
 from quant_core.models import DayBar
@@ -24,6 +24,31 @@ def _bars(rows):
         Decimal(str(row["open"])), Decimal(str(row["high"])), Decimal(str(row["low"])), Decimal(str(row["close"])),
         int(Decimal(str(row["vol"])) * 100), Decimal(str(row["amount"])) * 1000, None, None,
     ) for row in rows]
+
+
+def _previous_refresh(connection):
+    """Return the latest successful Top50 market snapshot for incremental refreshes."""
+    return connection.execute(
+        "SELECT market_snapshot_id, trade_date, manifest_sha256 FROM market_data_snapshots "
+        "WHERE market_snapshot_id LIKE 'tushare_pool_%' ORDER BY trade_date DESC LIMIT 1"
+    ).fetchone()
+
+
+def _local_window_bars(connection, tickers, days):
+    """Read the locally retained rolling window, preferring the newest snapshot per ticker/day."""
+    if not tickers or not days:
+        return []
+    ticker_marks = ",".join("?" for _ in tickers)
+    day_marks = ",".join("?" for _ in days)
+    rows = connection.execute(
+        "SELECT trade_date, ticker, open, high, low, close, volume, amount, limit_up, limit_down, status "
+        "FROM daily_bars WHERE ticker IN (" + ticker_marks + ") AND trade_date IN (" + day_marks + ") "
+        "ORDER BY market_snapshot_id", [*tickers, *days]
+    ).fetchall()
+    by_key = {}
+    for row in rows:
+        by_key[(row[0], row[1])] = DayBar(*row)
+    return list(by_key.values())
 
 
 def main() -> None:
@@ -53,38 +78,50 @@ def main() -> None:
         raise RuntimeError("no qualifying market-cap records returned")
     calendar = client.trade_cal(exchange="SSE", start_date=(trade_date - timedelta(days=70)).strftime("%Y%m%d"),
                                 end_date=trade_date.strftime("%Y%m%d"), is_open="1")
-    days = sorted(calendar["cal_date"].tolist())[-(args.momentum_days + 1):]
+    days = sorted(datetime.strptime(str(value), "%Y%m%d").date() for value in calendar["cal_date"].tolist())[-(args.momentum_days + 1):]
     if len(days) < args.momentum_days + 1:
         raise RuntimeError("insufficient trading days for momentum window")
     selected_tickers = set(caps) | set(args.include_ticker)
+    with read_connection(args.db) as connection:
+        previous = _previous_refresh(connection)
+        previous_date = previous[1] if previous else None
+        previous_hash = previous[2] if previous else ""
+        required_days = days if previous_date is None or previous_date < days[0] else [day for day in days if day > previous_date]
     records = []
-    for day in days:
-        frame = client.daily(trade_date=str(day), fields="ts_code,trade_date,open,high,low,close,vol,amount")
+    for day in required_days:
+        frame = client.daily(trade_date=day.strftime("%Y%m%d"), fields="ts_code,trade_date,open,high,low,close,vol,amount")
         records.extend(row for row in frame.to_dict("records") if str(row["ts_code"]) in selected_tickers)
-    benchmark = client.index_daily(ts_code=args.benchmark_ticker, start_date=str(days[0]), end_date=str(days[-1]),
-                                   fields="ts_code,trade_date,open,high,low,close,vol,amount")
-    benchmark_rows = benchmark.to_dict("records")
-    if len(benchmark_rows) != len(days):
+    with read_connection(args.db) as connection:
+        existing = _local_window_bars(connection, sorted(selected_tickers | {args.benchmark_ticker}), days)
+    existing_benchmark_dates = {bar.trade_date for bar in existing if bar.ticker == args.benchmark_ticker}
+    benchmark_days = [day for day in days if day not in existing_benchmark_dates]
+    benchmark = client.index_daily(ts_code=args.benchmark_ticker,
+                                   start_date=min(benchmark_days).strftime("%Y%m%d"), end_date=max(benchmark_days).strftime("%Y%m%d"),
+                                   fields="ts_code,trade_date,open,high,low,close,vol,amount") if benchmark_days else None
+    benchmark_rows = [] if benchmark is None else benchmark.to_dict("records")
+    if benchmark_days and len(benchmark_rows) != len(benchmark_days):
         raise RuntimeError("benchmark index data is incomplete for the momentum window")
     records.extend(benchmark_rows)
+    refreshed = _bars(records)
+    by_key = {(bar.trade_date, bar.ticker): bar for bar in existing}
+    by_key.update({(bar.trade_date, bar.ticker): bar for bar in refreshed})
+    rolling_bars = [bar for key, bar in by_key.items() if key[0] in set(days) and key[1] in (selected_tickers | {args.benchmark_ticker})]
     artifact_dir = Path(args.artifact_dir); artifact_dir.mkdir(parents=True, exist_ok=True)
     raw_path = artifact_dir / f"refresh_{trade_date.isoformat()}.raw.json"
-    raw_path.write_text(json.dumps({"caps": cap_frame.to_dict("records"), "bars": records}, default=str, ensure_ascii=False), encoding="utf-8")
+    raw_path.write_text(json.dumps({"caps": cap_frame.to_dict("records"), "new_bars": records,
+                                    "incremental_dates": [str(day) for day in required_days]}, default=str, ensure_ascii=False), encoding="utf-8")
     manifest = artifact_dir / f"refresh_{trade_date.isoformat()}.manifest.json"
-    manifest_hash = write_manifest(manifest, {str(raw_path): sha256(raw_path.read_bytes()).hexdigest()})
+    manifest_hash = write_manifest(manifest, {str(raw_path): sha256(raw_path.read_bytes()).hexdigest()}, previous_hash)
     snapshot_id, cap_id = f"tushare_pool_{trade_date:%Y%m%d}", f"tushare_cap_{trade_date:%Y%m%d}"
     now = datetime.now(timezone.utc)
-    connection = duckdb.connect(args.db)
-    try:
+    with writer_connection(args.db) as connection:
         snapshots, universes = SnapshotService(connection), UniverseService(connection)
         snapshots.register_market_snapshot(snapshot_id, trade_date, "tushare_daily", now, now, str(manifest), manifest_hash, now)
-        MarketDataStore(connection).store_bars(snapshot_id, _bars(records))
+        MarketDataStore(connection).store_bars(snapshot_id, rolling_bars)
         universes.store_market_caps(cap_id, now, "tushare_daily_basic", caps, now)
         universe_id = universes.create_snapshot(cap_id, trade_date, DynamicUniverseRule(
             args.group_name, minimum, args.momentum_days, args.top_n), MarketDataStore(connection).load_bars(snapshot_id), now)
-    finally:
-        connection.close()
-    print(json.dumps({"market_snapshot_id": snapshot_id, "market_cap_snapshot_id": cap_id, "universe_snapshot_id": universe_id, "candidates": len(caps), "bars": len(records)}))
+    print(json.dumps({"market_snapshot_id": snapshot_id, "market_cap_snapshot_id": cap_id, "universe_snapshot_id": universe_id, "candidates": len(caps), "bars": len(rolling_bars), "incremental_dates": [str(day) for day in required_days]}))
 
 
 if __name__ == "__main__":

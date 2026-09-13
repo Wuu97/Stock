@@ -1,0 +1,34 @@
+{
+  "schema_version": "strategy_sleeves_v1",
+  "sleeves": {
+    "TACTICAL": {
+      "review_interval_days": 5,
+      "max_holding_days": 60,
+      "description": "Short-horizon ML or event-driven trading; no long-term allocation claim."
+    },
+    "TREND": {
+      "review_interval_days": 20,
+      "max_holding_days": 120,
+      "description": "Sector or broad-theme trend exposure; monthly review, not annual buy-and-forget."
+    },
+    "CORE_CANDIDATE": {
+      "review_interval_days": 60,
+      "max_holding_days": 252,
+      "description": "Long-horizon allocation candidate; quarterly review and separate risk budget required before activation."
+    }
+  },
+  "ticker_overrides": {
+    "512400.SH": {"sleeve": "TREND", "rationale": "有色金属 ETF：周期行业，按趋势而非永久配置管理。"},
+    "513750.SH": {"sleeve": "CORE_CANDIDATE", "rationale": "港股非银金融 ETF：长期配置候选，需单独风险预算。"},
+    "516080.SH": {"sleeve": "TREND", "rationale": "创新药行业 ETF：高波动行业趋势仓。"},
+    "588000.SH": {"sleeve": "TREND", "rationale": "科创50 ETF：高波动成长风格趋势仓。"},
+    "159740.SZ": {"sleeve": "TREND", "rationale": "恒生科技 ETF：高波动成长风格趋势仓。"},
+    "159792.SZ": {"sleeve": "TREND", "rationale": "港股通互联网 ETF：高波动成长风格趋势仓。"},
+    "600809.SH": {"sleeve": "CORE_CANDIDATE", "rationale": "消费白酒个股：长期配置候选，须独立复核基本面与估值。"},
+    "601888.SH": {"sleeve": "CORE_CANDIDATE", "rationale": "消费服务个股：长期配置候选，须独立复核基本面与估值。"},
+    "000737.SZ": {"sleeve": "TREND", "rationale": "铜资源股：周期趋势仓。"},
+    "002716.SZ": {"sleeve": "TREND", "rationale": "白银资源股：周期趋势仓。"},
+    "601020.SH": {"sleeve": "TREND", "rationale": "有色资源股：周期趋势仓。"},
+    "601899.SH": {"sleeve": "TREND", "rationale": "有色资源股：周期趋势仓。"}
+  }
+}

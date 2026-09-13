@@ -6,7 +6,7 @@ from decimal import Decimal
 import os
 from pathlib import Path
 
-import duckdb
+from quant_core.database import writer_connection
 import tushare as ts
 
 from quant_core.environment import load_env_file
@@ -39,7 +39,7 @@ def main() -> None:
     }
 
     now = datetime.now(timezone.utc)
-    connection = duckdb.connect(args.db)
+    connection = writer_connection(args.db, transaction=False)
     try:
         UniverseService(connection).store_market_caps(
             args.snapshot_id, now, "tushare_daily_basic", values, now

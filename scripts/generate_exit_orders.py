@@ -5,7 +5,7 @@ from datetime import date
 from decimal import Decimal
 import json
 
-import duckdb
+from quant_core.database import writer_connection
 
 from quant_core.daily_risk import create_exit_intents
 from quant_core.market_data import MarketDataStore
@@ -25,7 +25,7 @@ def main() -> None:
     parser.add_argument("--max-holding-days", type=int, default=60)
     args = parser.parse_args()
 
-    connection = duckdb.connect(args.db)
+    connection = writer_connection(args.db, transaction=False)
     try:
         signals = create_exit_intents(
             connection, args.account_id, date.fromisoformat(args.as_of_date),

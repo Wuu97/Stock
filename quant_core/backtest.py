@@ -1,6 +1,6 @@
 """Leak-free daily-bar replay using the same orders, matching, ledger and exit rules as paper trading."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 from typing import Iterable, Mapping, Optional, Sequence, Set
@@ -8,9 +8,10 @@ from uuid import uuid4
 
 from .daily_risk import create_exit_intents
 from .features import FeatureRow
+from .matching import OpenGapPolicy
 from .models import DayBar, FeeModel, OrderIntent
 from .portfolio import PortfolioPolicy, construct_buys
-from .risk import ExitRule
+from .risk import ExitPolicy
 from .settlement import SettlementService
 from .strategy_research import ScoreProvider, StrategySpec, baseline_strategy_spec, resolve_score_provider
 
@@ -23,13 +24,16 @@ class BacktestConfig:
     shares_per_order: int = 100
     lookback_days: int = 20
     top_n: int = 5
-    volume_multiple: Decimal = Decimal("1.0")
+    volume_multiple: Decimal = Decimal("1.5")
     strategy_spec: Optional[StrategySpec] = None
-    portfolio_policy: Optional[PortfolioPolicy] = None
+    portfolio_policy: PortfolioPolicy = field(
+        default_factory=lambda: PortfolioPolicy.equal_weight(5, Decimal("0.05"))
+    )
+    open_gap_policy: OpenGapPolicy = field(default_factory=OpenGapPolicy)
 
 
 def replay_daily_strategy(connection, bars: Iterable[DayBar], trading_days: Sequence[date],
-                          config: BacktestConfig, fee: FeeModel, exit_rule: ExitRule,
+                          config: BacktestConfig, fee: FeeModel, exit_rule: ExitPolicy,
                           allowed_tickers: Optional[Set[str]] = None,
                           universe_by_date: Optional[Mapping[date, Set[str]]] = None,
                           score_provider: Optional[ScoreProvider] = None,
@@ -56,7 +60,7 @@ def replay_daily_strategy(connection, bars: Iterable[DayBar], trading_days: Sequ
     service = SettlementService(connection)
     spec = config.strategy_spec or baseline_strategy_spec(config.volume_multiple, config.top_n)
     provider = score_provider or resolve_score_provider(spec)
-    policy = config.portfolio_policy or PortfolioPolicy.fixed_shares(config.shares_per_order)
+    policy = config.portfolio_policy
     if provider.spec != spec:
         raise ValueError("score provider spec does not match backtest config")
     buys_submitted = 0
@@ -65,7 +69,11 @@ def replay_daily_strategy(connection, bars: Iterable[DayBar], trading_days: Sequ
     for index, trade_date in enumerate(calendar):
         next_day = calendar[index + 1] if index + 1 < len(calendar) else None
         suspended = (suspended_tickers_by_date or {}).get(trade_date, set())
-        _settle_pending(connection, service, config.account_id, by_day[trade_date], trade_date, next_day, fee, suspended)
+        prior_closes = {} if index == 0 else {
+            ticker: bar.close for ticker, bar in by_day[calendar[index - 1]].items()
+        }
+        _settle_pending(connection, service, config.account_id, by_day[trade_date], trade_date, next_day, fee,
+                        suspended, prior_closes, config.open_gap_policy)
         prices = {ticker: bar.close for ticker, bar in by_day[trade_date].items()}
         last_official_closes.update((ticker, (trade_date, close)) for ticker, close in prices.items())
         service.value_day(config.account_id, trade_date, prices, suspended, last_official_closes)
@@ -102,7 +110,8 @@ def replay_daily_strategy(connection, bars: Iterable[DayBar], trading_days: Sequ
 
 def _settle_pending(connection, service: SettlementService, account_id: str,
                     day_bars: Mapping[str, DayBar], trade_date: date, next_day: Optional[date],
-                    fee: FeeModel, suspended_tickers: Set[str]) -> None:
+                    fee: FeeModel, suspended_tickers: Set[str], prior_closes: Mapping[str, Decimal],
+                    open_gap_policy: OpenGapPolicy) -> None:
     rows = connection.execute(
         "SELECT intent_id, ticker, direction, target_shares FROM sim_order_intents "
         "WHERE account_id = ? AND target_trade_date = ? AND order_status = 'PENDING' ORDER BY intent_id",
@@ -126,7 +135,8 @@ def _settle_pending(connection, service: SettlementService, account_id: str,
                 [intent_id],
             )
             continue
-        service.settle(OrderIntent(intent_id, account_id, ticker, trade_date, direction, shares), bar, successor, fee)
+        service.settle(OrderIntent(intent_id, account_id, ticker, trade_date, direction, shares), bar, successor,
+                       fee, prior_closes.get(ticker), open_gap_policy)
 
 
 def _held_tickers(connection, account_id: str) -> set[str]:
@@ -178,6 +188,8 @@ def _build_feature_rows_by_day(bars: Sequence[DayBar], calendar: Sequence[date],
                 sma=sum(closes, Decimal("0")) / lookback_days, average_volume=average_volume,
                 momentum=(history[-1].close / history[0].close) - Decimal("1"),
                 volume_ratio=Decimal(history[-1].volume) / average_volume if average_volume else Decimal("0"),
+                momentum_5d=((history[-1].close / history[-6].close) - Decimal("1")
+                              if lookback_days >= 6 else Decimal("0")),
             ))
         rows_by_day[as_of_date] = rows
     return rows_by_day

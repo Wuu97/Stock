@@ -67,8 +67,10 @@ def sell_entries(gross: Decimal, cost_relieved: Decimal, commission: Decimal,
         entries.append(JournalEntry("6002", stamp_duty, ZERO, "sell stamp duty"))
     if transfer_fee > ZERO:
         entries.append(JournalEntry("6003", transfer_fee, ZERO, "sell transfer fee"))
-    entries.append(JournalEntry("5001", ZERO, pnl, "realized gain", ticker) if pnl >= ZERO
-                   else JournalEntry("5001", -pnl, ZERO, "realized loss", ticker))
+    if pnl > ZERO:
+        entries.append(JournalEntry("5001", ZERO, pnl, "realized gain", ticker))
+    elif pnl < ZERO:
+        entries.append(JournalEntry("5001", -pnl, ZERO, "realized loss", ticker))
     return validate_entries(entries)
 
 

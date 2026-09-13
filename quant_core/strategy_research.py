@@ -4,9 +4,11 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 import json
+from pathlib import Path
 from typing import Iterable, Mapping, Protocol, Tuple
 
 from .features import FeatureRow
+from .ml_shadow import FEATURE_COLUMNS, MLShadowModel
 from .strategy import BaselineConfig, Recommendation, select_baseline
 
 
@@ -14,6 +16,8 @@ FEATURE_SCHEMA_VERSION = "daily_features_v1"
 BASELINE_PROVIDER_TYPE = "BASELINE_MOMENTUM_TREND"
 PURE_MOMENTUM_PROVIDER_TYPE = "PURE_MOMENTUM"
 MOMENTUM_VOLUME_PROVIDER_TYPE = "MOMENTUM_VOLUME_COMPOSITE"
+ML_RIDGE_PROVIDER_TYPE = "ML_RIDGE_EXCESS_RETURN"
+ML_RIDGE_MARKET_GUARD_PROVIDER_TYPE = "ML_RIDGE_MARKET_GUARD"
 
 
 @dataclass(frozen=True)
@@ -117,13 +121,73 @@ class MomentumVolumeScoreProvider:
         scored = [(
             row, momentum_weight * momentum_ranks[row.ticker] + volume_weight * volume_ranks[row.ticker]
         ) for row in rows]
-        ranked = sorted(scored, key=lambda item: (item[1], item[0].ticker), reverse=True)[:top_n]
+        ranked = sorted(scored, key=lambda item: (-item[1], item[0].ticker))[:top_n]
         picks = tuple(Recommendation(row.ticker, index, score, row.close, {
             "momentum": str(row.momentum), "volume_ratio": str(row.volume_ratio),
             "momentum_percentile": str(momentum_ranks[row.ticker]), "volume_percentile": str(volume_ranks[row.ticker]),
             "momentum_weight": str(momentum_weight), "provider": MOMENTUM_VOLUME_PROVIDER_TYPE,
         }) for index, (row, score) in enumerate(ranked, start=1))
         return StrategyResult(self.spec, as_of_trade_date, picks)
+
+
+@dataclass(frozen=True)
+class MLRidgeScoreProvider:
+    """Rank a frozen Ridge artifact without allowing it to select position size or execution."""
+
+    spec: StrategySpec
+    model: MLShadowModel
+
+    def score(self, features: Iterable[FeatureRow], as_of_trade_date: date) -> StrategyResult:
+        if self.model.trained_through_date >= as_of_trade_date:
+            raise ValueError("ML model cannot score on or before its training cutoff")
+        top_n = _positive_top_n(self.spec.parameters)
+        rows = tuple(features)
+        momentums = [float(row.momentum) for row in rows]
+        percentiles, zscores = _float_cross_section_statistics(momentums)
+        scored = []
+        for index, row in enumerate(rows):
+            values = {
+                "momentum_5d": float(row.momentum_5d), "momentum_20d": float(row.momentum),
+                "sma20_deviation": float((row.close / row.sma) - Decimal("1")) if row.sma else 0.0,
+                "volume_ratio_20d": float(row.volume_ratio),
+                "momentum_20d_percentile": percentiles[index], "momentum_20d_zscore": zscores[index],
+            }
+            scored.append((row, self.model.predict(values)))
+        ranked = sorted(scored, key=lambda item: (item[1], item[0].ticker), reverse=True)[:top_n]
+        picks = tuple(Recommendation(row.ticker, index, Decimal(str(score)), row.close, {
+            "provider": ML_RIDGE_PROVIDER_TYPE, "predicted_excess_return_5d": str(score),
+            "model_sha256": self.model.artifact_sha256,
+        }) for index, (row, score) in enumerate(ranked, start=1))
+        return StrategyResult(self.spec, as_of_trade_date, picks)
+
+
+@dataclass(frozen=True)
+class MLRidgeMarketGuardScoreProvider:
+    """Fail closed on new ML entries unless the benchmark is in a risk-on trend.
+
+    This is a research-only entry gate. It deliberately leaves exits and existing
+    positions to the shared replay engine, so the experiment changes only new buys.
+    """
+
+    spec: StrategySpec
+    model: MLShadowModel
+    benchmark_closes: Mapping[date, Decimal]
+    lookback_days: int = 20
+
+    def score(self, features: Iterable[FeatureRow], as_of_trade_date: date) -> StrategyResult:
+        if not self._is_risk_on(as_of_trade_date):
+            return StrategyResult(self.spec, as_of_trade_date, ())
+        base_spec = StrategySpec(self.spec.strategy_id, self.spec.strategy_version,
+                                 ML_RIDGE_PROVIDER_TYPE, self.spec.parameters_json)
+        result = MLRidgeScoreProvider(base_spec, self.model).score(features, as_of_trade_date)
+        return StrategyResult(self.spec, as_of_trade_date, result.recommendations)
+
+    def _is_risk_on(self, as_of_trade_date: date) -> bool:
+        days = sorted(day for day in self.benchmark_closes if day <= as_of_trade_date)[-self.lookback_days:]
+        if len(days) != self.lookback_days or days[-1] != as_of_trade_date:
+            return False
+        closes = [self.benchmark_closes[day] for day in days]
+        return closes[-1] > sum(closes, Decimal("0")) / self.lookback_days and closes[-1] > closes[0]
 
 
 def baseline_strategy_spec(volume_multiple: Decimal, top_n: int,
@@ -152,7 +216,32 @@ def resolve_score_provider(spec: StrategySpec) -> ScoreProvider:
         return PureMomentumScoreProvider(spec)
     if spec.provider_type == MOMENTUM_VOLUME_PROVIDER_TYPE:
         return MomentumVolumeScoreProvider(spec)
+    if spec.provider_type == ML_RIDGE_PROVIDER_TYPE:
+        parameters = spec.parameters
+        try:
+            model = MLShadowModel.load(Path(str(parameters["model_path"])))
+            expected_hash = str(parameters["model_sha256"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("ML Ridge strategy requires model_path and model_sha256") from error
+        if model.artifact_sha256 != expected_hash:
+            raise ValueError("ML Ridge model artifact hash does not match strategy specification")
+        return MLRidgeScoreProvider(spec, model)
     raise ValueError(f"unsupported score provider: {spec.provider_type}")
+
+
+def ml_ridge_strategy_spec(model_path: str, model_sha256: str, top_n: int) -> StrategySpec:
+    return StrategySpec("ml_ridge_excess_return_shadow_v1", "ridge_v1", ML_RIDGE_PROVIDER_TYPE,
+                        json.dumps({"model_path": model_path, "model_sha256": model_sha256, "top_n": top_n},
+                                   sort_keys=True, separators=(",", ":")))
+
+
+def ml_ridge_market_guard_strategy_spec(top_n: int, lookback_days: int = 20) -> StrategySpec:
+    if lookback_days < 2:
+        raise ValueError("market guard lookback must be at least two days")
+    return StrategySpec("ml_ridge_market_guard_research_v1", "ridge_guard_v1", ML_RIDGE_MARKET_GUARD_PROVIDER_TYPE,
+                        json.dumps({"top_n": top_n, "benchmark": "000300.SH", "lookback_days": lookback_days,
+                                    "entry_rule": "close_above_sma20_and_positive_20d_return"},
+                                   sort_keys=True, separators=(",", ":")))
 
 
 def _positive_top_n(parameters: Mapping[str, object]) -> int:
@@ -172,3 +261,13 @@ def _percentile_ranks(rows: Iterable[FeatureRow], field: str) -> Mapping[str, De
     denominator = Decimal(max(len(values) - 1, 1))
     by_value = {value: Decimal(index) / denominator for index, value in enumerate(values)}
     return {row.ticker: by_value[Decimal(str(getattr(row, field)))] for row in rows}
+
+
+def _float_cross_section_statistics(values):
+    if not values:
+        return [], []
+    ordered = sorted(values)
+    percentiles = [(sum(value >= candidate for candidate in ordered) - 0.5) / len(values) for value in values]
+    mean = sum(values) / len(values)
+    scale = sum((value - mean) ** 2 for value in values) ** 0.5 / len(values) ** 0.5
+    return percentiles, [(value - mean) / scale if scale else 0.0 for value in values]
