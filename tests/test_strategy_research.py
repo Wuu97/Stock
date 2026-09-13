@@ -6,7 +6,9 @@ import pytest
 from quant_core.features import build_features
 from quant_core.models import DayBar
 from quant_core.strategy_research import (BaselineScoreProvider, StrategySpec, baseline_strategy_spec,
-                                          momentum_volume_strategy_spec, pure_momentum_strategy_spec, resolve_score_provider)
+                                          bulldozer_overnight_daily_proxy_spec, momentum_volume_strategy_spec,
+                                          pure_momentum_strategy_spec, resolve_score_provider)
+from quant_core.bulldozer import BulldozerConfig, build_bulldozer_features
 
 
 def _bars():
@@ -42,3 +44,14 @@ def test_pure_momentum_and_composite_providers_are_distinct_and_reproducible():
     assert [item.ticker for item in pure.recommendations] == ["600000.SH", "600001.SH"]
     assert composite.recommendations[0].ticker == "600001.SH"
     assert "volume_percentile" in composite.recommendations[0].reasons
+
+
+def test_bulldozer_daily_proxy_keeps_only_explicit_ma5_rule_and_records_gaps():
+    as_of = date(2026, 1, 21)
+    bars = _bars()
+    features = build_bulldozer_features(bars, as_of, BulldozerConfig(top_n=1, consecutive_ma5_days=8))
+    spec = bulldozer_overnight_daily_proxy_spec(top_n=1, consecutive_ma5_days=8)
+    result = resolve_score_provider(spec).score(features, as_of)
+    assert [item.ticker for item in result.recommendations] == ["600000.SH"]
+    assert result.recommendations[0].reasons["source_rule"] == "连续8天沿着五日均线向上"
+    assert "竞价" in result.recommendations[0].reasons["unmodeled_source_rules"]

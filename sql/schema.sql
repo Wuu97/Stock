@@ -326,6 +326,20 @@ CREATE TABLE IF NOT EXISTS sim_exit_signals (
     created_at TIMESTAMPTZ NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS bulldozer_exit_plans (
+    plan_id VARCHAR PRIMARY KEY,
+    lot_id VARCHAR NOT NULL UNIQUE REFERENCES sim_position_lots(lot_id),
+    account_id VARCHAR NOT NULL REFERENCES sim_accounts(account_id),
+    entry_trade_date DATE NOT NULL,
+    required_exit_trade_date DATE NOT NULL,
+    current_target_trade_date DATE NOT NULL,
+    active_intent_id VARCHAR NOT NULL REFERENCES sim_order_intents(intent_id),
+    defer_count INTEGER NOT NULL CHECK (defer_count >= 0),
+    plan_status VARCHAR NOT NULL CHECK (plan_status IN ('PENDING', 'FILLED', 'BLOCKED')),
+    exit_reason_code VARCHAR NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sim_lot_disposal_events (
     disposal_id VARCHAR PRIMARY KEY,
     sell_event_id VARCHAR NOT NULL,

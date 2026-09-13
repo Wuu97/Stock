@@ -7,13 +7,16 @@ from typing import Iterable, Mapping, Optional, Sequence, Set
 from uuid import uuid4
 
 from .daily_risk import create_exit_intents
+from .bulldozer import BulldozerConfig, build_bulldozer_features_by_day
+from .bulldozer_exit import reconcile_mandatory_exit_plans, schedule_mandatory_exits_for_new_lots
 from .features import FeatureRow
 from .matching import OpenGapPolicy
 from .models import DayBar, FeeModel, OrderIntent
 from .portfolio import PortfolioPolicy, construct_buys
 from .risk import ExitPolicy
 from .settlement import SettlementService
-from .strategy_research import ScoreProvider, StrategySpec, baseline_strategy_spec, resolve_score_provider
+from .strategy_research import (BULLDOZER_OVERNIGHT_PROVIDER_TYPE, ScoreProvider, StrategySpec,
+                                baseline_strategy_spec, resolve_score_provider)
 
 
 @dataclass(frozen=True)
@@ -56,15 +59,20 @@ def replay_daily_strategy(connection, bars: Iterable[DayBar], trading_days: Sequ
         if bar.trade_date in by_day:
             by_day[bar.trade_date][bar.ticker] = bar
     feature_calendar = tuple(sorted({bar.trade_date for bar in all_bars if bar.trade_date <= config.end_date}))
-    features_by_day = _build_feature_rows_by_day(all_bars, feature_calendar, config.lookback_days)
     service = SettlementService(connection)
     spec = config.strategy_spec or baseline_strategy_spec(config.volume_multiple, config.top_n)
+    features_by_day = (build_bulldozer_features_by_day(all_bars, feature_calendar,
+                                                        BulldozerConfig(top_n=int(spec.parameters["top_n"]),
+                                                                        consecutive_ma5_days=int(spec.parameters["consecutive_ma5_days"])))
+                       if spec.provider_type == BULLDOZER_OVERNIGHT_PROVIDER_TYPE
+                       else _build_feature_rows_by_day(all_bars, feature_calendar, config.lookback_days))
     provider = score_provider or resolve_score_provider(spec)
     policy = config.portfolio_policy
     if provider.spec != spec:
         raise ValueError("score provider spec does not match backtest config")
     buys_submitted = 0
     exits_signalled = 0
+    forced_exit_deferrals = 0
     last_official_closes: dict[str, tuple[date, Decimal]] = {}
     for index, trade_date in enumerate(calendar):
         next_day = calendar[index + 1] if index + 1 < len(calendar) else None
@@ -74,14 +82,19 @@ def replay_daily_strategy(connection, bars: Iterable[DayBar], trading_days: Sequ
         }
         _settle_pending(connection, service, config.account_id, by_day[trade_date], trade_date, next_day, fee,
                         suspended, prior_closes, config.open_gap_policy)
+        if spec.provider_type == BULLDOZER_OVERNIGHT_PROVIDER_TYPE:
+            forced_exit_deferrals += reconcile_mandatory_exit_plans(connection, config.account_id, trade_date, next_day)
+            if next_day is not None:
+                exits_signalled += schedule_mandatory_exits_for_new_lots(connection, config.account_id, trade_date, next_day)
         prices = {ticker: bar.close for ticker, bar in by_day[trade_date].items()}
         last_official_closes.update((ticker, (trade_date, close)) for ticker, close in prices.items())
         service.value_day(config.account_id, trade_date, prices, suspended, last_official_closes)
         if next_day is None:
             continue
-        exits_signalled += len(create_exit_intents(
-            connection, config.account_id, trade_date, next_day, all_bars, exit_rule
-        ))
+        if spec.provider_type != BULLDOZER_OVERNIGHT_PROVIDER_TYPE:
+            exits_signalled += len(create_exit_intents(
+                connection, config.account_id, trade_date, next_day, all_bars, exit_rule
+            ))
         features = features_by_day[trade_date]
         point_in_time_universe = universe_by_date[trade_date] if universe_by_date is not None else allowed_tickers
         if point_in_time_universe is not None:
@@ -105,6 +118,7 @@ def replay_daily_strategy(connection, bars: Iterable[DayBar], trading_days: Sequ
         "orders": {f"{direction}_{status}": count for direction, status, count in orders},
         "buy_orders_submitted": buys_submitted,
         "exit_signals": exits_signalled,
+        "forced_exit_deferrals": forced_exit_deferrals,
     }
 
 

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Iterable, Mapping, Protocol, Tuple
 
 from .features import FeatureRow
+from .bulldozer import BulldozerConfig, BulldozerFeatureRow
 from .ml_shadow import FEATURE_COLUMNS, MLShadowModel
 from .strategy import BaselineConfig, Recommendation, select_baseline
 
@@ -18,6 +19,7 @@ PURE_MOMENTUM_PROVIDER_TYPE = "PURE_MOMENTUM"
 MOMENTUM_VOLUME_PROVIDER_TYPE = "MOMENTUM_VOLUME_COMPOSITE"
 ML_RIDGE_PROVIDER_TYPE = "ML_RIDGE_EXCESS_RETURN"
 ML_RIDGE_MARKET_GUARD_PROVIDER_TYPE = "ML_RIDGE_MARKET_GUARD"
+BULLDOZER_OVERNIGHT_PROVIDER_TYPE = "BULLDOZER_OVERNIGHT_DAILY_PROXY"
 
 
 @dataclass(frozen=True)
@@ -131,6 +133,35 @@ class MomentumVolumeScoreProvider:
 
 
 @dataclass(frozen=True)
+class BulldozerOvernightScoreProvider:
+    """Rank only the explicit MA5 rule from the source material.
+
+    Ranking by smallest positive MA5 bias is an execution-neutral tie-breaker,
+    recorded in each recommendation.  No subjective pattern filters are inferred.
+    """
+
+    spec: StrategySpec
+
+    def score(self, features: Iterable[BulldozerFeatureRow], as_of_trade_date: date) -> StrategyResult:
+        parameters = self.spec.parameters
+        try:
+            config = BulldozerConfig(top_n=int(parameters["top_n"]),
+                                     consecutive_ma5_days=int(parameters["consecutive_ma5_days"]))
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("bulldozer strategy requires top_n and consecutive_ma5_days") from error
+        qualified = [row for row in features if row.close_above_ma5_run_length >= config.consecutive_ma5_days]
+        ranked = sorted(qualified, key=lambda row: (row.bias_ma5, row.ticker))[:config.top_n]
+        picks = tuple(Recommendation(row.ticker, index, -row.bias_ma5, row.close, {
+            "provider": BULLDOZER_OVERNIGHT_PROVIDER_TYPE,
+            "close": str(row.close), "ma5": str(row.ma5), "bias_ma5": str(row.bias_ma5),
+            "close_above_ma5_run_length": row.close_above_ma5_run_length,
+            "source_rule": "连续8天沿着五日均线向上",
+            "unmodeled_source_rules": ["形态美观", "五不选阈值", "主线", "竞价", "盘中MACD九转"],
+        }) for index, row in enumerate(ranked, start=1))
+        return StrategyResult(self.spec, as_of_trade_date, picks)
+
+
+@dataclass(frozen=True)
 class MLRidgeScoreProvider:
     """Rank a frozen Ridge artifact without allowing it to select position size or execution."""
 
@@ -203,6 +234,18 @@ def pure_momentum_strategy_spec(top_n: int) -> StrategySpec:
                         json.dumps({"top_n": top_n}, sort_keys=True, separators=(",", ":")))
 
 
+def bulldozer_overnight_daily_proxy_spec(top_n: int = 5, consecutive_ma5_days: int = 8) -> StrategySpec:
+    """Frozen daily proxy; later execution layers must use a new strategy version."""
+    parameters = {
+        "top_n": top_n,
+        "consecutive_ma5_days": consecutive_ma5_days,
+        "entry": "next_open_daily_proxy",
+        "exit": "next_trading_day_open_mandatory_no_limit_up_exception",
+    }
+    return StrategySpec("bulldozer_overnight_v1", "daily_proxy_v1", BULLDOZER_OVERNIGHT_PROVIDER_TYPE,
+                        json.dumps(parameters, sort_keys=True, separators=(",", ":")))
+
+
 def momentum_volume_strategy_spec(top_n: int, momentum_weight: Decimal = Decimal("0.7")) -> StrategySpec:
     return StrategySpec("momentum_volume_composite_v1", "v1", MOMENTUM_VOLUME_PROVIDER_TYPE,
                         json.dumps({"top_n": top_n, "momentum_weight": str(momentum_weight)}, sort_keys=True, separators=(",", ":")))
@@ -216,6 +259,8 @@ def resolve_score_provider(spec: StrategySpec) -> ScoreProvider:
         return PureMomentumScoreProvider(spec)
     if spec.provider_type == MOMENTUM_VOLUME_PROVIDER_TYPE:
         return MomentumVolumeScoreProvider(spec)
+    if spec.provider_type == BULLDOZER_OVERNIGHT_PROVIDER_TYPE:
+        return BulldozerOvernightScoreProvider(spec)
     if spec.provider_type == ML_RIDGE_PROVIDER_TYPE:
         parameters = spec.parameters
         try:

@@ -13,7 +13,8 @@ from quant_core.matching import OpenGapPolicy
 from quant_core.models import FeeModel
 from quant_core.portfolio import PortfolioPolicy
 from quant_core.risk import ExitRule
-from quant_core.strategy_research import baseline_strategy_spec, momentum_volume_strategy_spec, pure_momentum_strategy_spec
+from quant_core.strategy_research import (baseline_strategy_spec, bulldozer_overnight_daily_proxy_spec,
+                                          momentum_volume_strategy_spec, pure_momentum_strategy_spec)
 from quant_core.universe import UniverseService
 
 
@@ -26,14 +27,15 @@ def main() -> None:
     parser.add_argument("--end-date", required=True)
     parser.add_argument("--universe-snapshot-id")
     parser.add_argument("--initial-cash", default="1000000")
-    parser.add_argument("--strategy", choices=("baseline", "pure_momentum", "momentum_volume"), default="baseline")
+    parser.add_argument("--strategy", choices=("baseline", "pure_momentum", "momentum_volume", "bulldozer_overnight"), default="baseline")
     parser.add_argument("--volume-multiple", default="1.5")
     parser.add_argument("--top-n", type=int, default=5)
     parser.add_argument("--momentum-weight", default="0.7")
     parser.add_argument("--portfolio-method", choices=("fixed_shares", "equal_weight"), default="equal_weight")
     parser.add_argument("--shares-per-order", type=int, default=100)
     parser.add_argument("--max-positions", type=int, default=5)
-    parser.add_argument("--cash-reserve", default="0.05")
+    parser.add_argument("--cash-reserve")
+    parser.add_argument("--bulldozer-consecutive-ma5-days", type=int, default=8)
     parser.add_argument("--max-open-gap-up", default="0.03")
     parser.add_argument("--max-open-gap-down", default="-0.04")
     args = parser.parse_args()
@@ -46,13 +48,19 @@ def main() -> None:
             from quant_core.settlement import SettlementService
             SettlementService(connection).create_account(args.account_id, "历史回测账户", Decimal(args.initial_cash), date.fromisoformat(args.start_date))
         allowed = None if not args.universe_snapshot_id else UniverseService(connection).member_tickers(args.universe_snapshot_id)
+        cash_reserve = Decimal(args.cash_reserve) if args.cash_reserve is not None else (
+            Decimal("0.50") if args.strategy == "bulldozer_overnight" else Decimal("0.05")
+        )
         policy = (PortfolioPolicy.fixed_shares(args.shares_per_order, args.max_positions)
                   if args.portfolio_method == "fixed_shares"
-                  else PortfolioPolicy.equal_weight(args.max_positions, Decimal(args.cash_reserve)))
+                  else PortfolioPolicy.equal_weight(args.max_positions, cash_reserve))
         strategy = ({
             "baseline": lambda: baseline_strategy_spec(Decimal(args.volume_multiple), args.top_n),
             "pure_momentum": lambda: pure_momentum_strategy_spec(args.top_n),
             "momentum_volume": lambda: momentum_volume_strategy_spec(args.top_n, Decimal(args.momentum_weight)),
+            "bulldozer_overnight": lambda: bulldozer_overnight_daily_proxy_spec(
+                args.top_n, args.bulldozer_consecutive_ma5_days
+            ),
         }[args.strategy])()
         result = replay_daily_strategy(
             connection, bars, days,

@@ -12,7 +12,8 @@ from quant_core.models import DayBar, FeeModel
 from quant_core.risk import ExitRule
 from quant_core.portfolio import PortfolioPolicy
 from quant_core.settlement import SettlementService
-from quant_core.strategy_research import baseline_strategy_spec, resolve_score_provider
+from quant_core.strategy_research import (baseline_strategy_spec, bulldozer_overnight_daily_proxy_spec,
+                                          resolve_score_provider)
 
 
 def test_backtest_replays_next_open_orders_without_future_bars():
@@ -161,3 +162,28 @@ def test_incremental_feature_cache_is_equivalent_to_daily_full_recalculation():
     cached = _build_feature_rows_by_day(bars, days, 20)
     for day in days:
         assert sorted(cached[day], key=lambda row: row.ticker) == sorted(build_features(bars, day, 20), key=lambda row: row.ticker)
+
+
+def test_bulldozer_proxy_buys_next_open_then_requires_exit_on_following_open():
+    connection = duckdb.connect(":memory:")
+    connection.execute(Path("sql/schema.sql").read_text())
+    start = date(2026, 1, 2)
+    days = [start + timedelta(days=index) for index in range(16)]
+    bars = [DayBar(day, "600000.SH", Decimal("10"), Decimal("10.2"), Decimal("9.8"),
+                   Decimal("10") + Decimal(index) / Decimal("100"), 1000, Decimal("10000"),
+                   Decimal("20"), Decimal("1")) for index, day in enumerate(days)]
+    SettlementService(connection).create_account("bulldozer", "test", Decimal("100000"), start)
+    spec = bulldozer_overnight_daily_proxy_spec(top_n=1)
+    replay_daily_strategy(
+        connection, bars, days,
+        BacktestConfig("bulldozer", days[11], days[-1], strategy_spec=spec,
+                       portfolio_policy=PortfolioPolicy.equal_weight(1)),
+        FeeModel("test", Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0")),
+        ExitRule(), {"600000.SH"}, score_provider=resolve_score_provider(spec),
+    )
+    buy_date, sell_date = connection.execute(
+        "SELECT MIN(trade_date) FILTER (WHERE direction = 'BUY'), MIN(trade_date) FILTER (WHERE direction = 'SELL') "
+        "FROM sim_executions"
+    ).fetchone()
+    assert sell_date == buy_date + timedelta(days=1)
+    assert connection.execute("SELECT COUNT(*) FROM bulldozer_exit_plans WHERE plan_status = 'FILLED'").fetchone()[0] >= 1

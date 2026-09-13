@@ -1,0 +1,14 @@
+strategy:
+  id: bulldozer_overnight_v1
+  version: daily_proxy_v1
+  documented_rules:
+    consecutive_ma5_days: 8
+    maximum_new_capital_fraction: "0.50"
+    entry: next_open_daily_proxy
+    exit: next_trading_day_open_mandatory_no_limit_up_exception
+  intentionally_unmodeled:
+    - 形态美观
+    - 五不选阈值
+    - 主线
+    - 集合竞价盘口
+    - 盘中MACD九转
