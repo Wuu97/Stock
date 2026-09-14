@@ -1,0 +1,60 @@
+{
+  "exposure_version": "manual_event_exposure_v4",
+  "exposures": [
+    {
+      "ticker": "302132.SZ",
+      "taxonomy_version": "SW2021_TUSHARE_20260908",
+      "industry_code": "650201",
+      "valid_from": "2026-04-29",
+      "valid_to": null,
+      "exposure_weight": "1.00",
+      "rationale": "2025 年年度报告摘要所载公司主体为中航成飞，航空装备行业事件与其航空器研制生产主营业务直接相关。",
+      "source_reference": "https://static.cninfo.com.cn/finalpage/2026-04-29/1225250580.PDF",
+      "reviewed_by": "codex_initial_review_20260914"
+    },
+    {
+      "ticker": "600026.SH",
+      "taxonomy_version": "SW2021_TUSHARE_20260908",
+      "industry_code": "421101",
+      "valid_from": "2026-03-27",
+      "valid_to": null,
+      "exposure_weight": "1.00",
+      "rationale": "2025 年年度报告披露公司主营油轮、LNG、LPG 及化学品运输，航运行业冲击直接传导至主营业务。",
+      "source_reference": "https://static.cninfo.com.cn/finalpage/2026-03-27/1225038087.PDF",
+      "reviewed_by": "codex_initial_review_20260914"
+    },
+    {
+      "ticker": "600893.SH",
+      "taxonomy_version": "SW2021_TUSHARE_20260908",
+      "industry_code": "650201",
+      "valid_from": "2026-04-02",
+      "valid_to": null,
+      "exposure_weight": "1.00",
+      "rationale": "2025 年年度报告披露公司为航空发动机及燃气轮机动力装置研制生产基地，航空装备行业事件与主营业务直接相关。",
+      "source_reference": "https://static.cninfo.com.cn/finalpage/2026-04-02/1225072838.PDF",
+      "reviewed_by": "codex_initial_review_20260914"
+    },
+    {
+      "ticker": "601869.SH",
+      "taxonomy_version": "SW2021_TUSHARE_20260908",
+      "industry_code": "730205",
+      "valid_from": "2026-03-28",
+      "valid_to": null,
+      "exposure_weight": "0.75",
+      "rationale": "2025 年年报及年度业绩说明会披露公司主营光纤预制棒、光纤和光缆，并直接受全球电信与算力数据中心需求影响；保留非通信业务及地域差异的折减。",
+      "source_reference": "https://static.cninfo.com.cn/finalpage/2026-03-28/1225048080.PDF",
+      "reviewed_by": "codex_initial_review_20260914"
+    },
+    {
+      "ticker": "601872.SH",
+      "taxonomy_version": "SW2021_TUSHARE_20260908",
+      "industry_code": "421101",
+      "valid_from": "2026-03-26",
+      "valid_to": null,
+      "exposure_weight": "1.00",
+      "rationale": "2025 年年度报告摘要明确披露公司所处海运贸易及航运市场，行业冲击直接传导至主营航运业务。",
+      "source_reference": "https://dataclouds.cninfo.com.cn/shgonggao/hsomarket/2026/20260326/297368c49bf24418a76acb016da9af50.PDF",
+      "reviewed_by": "codex_initial_review_20260914"
+    }
+  ]
+}

@@ -18,6 +18,7 @@ class DynamicUniverseRule:
     top_n: int
     rule_version: str = "current_cap_momentum_v1"
     min_listing_trading_days: int = 0
+    require_non_st: bool = False
 
     def __post_init__(self) -> None:
         if not self.group_name.strip():
@@ -33,6 +34,7 @@ class DynamicUniverseRule:
             "ranking_metric": "close_return",
             "top_n": self.top_n,
             "min_listing_trading_days": self.min_listing_trading_days,
+            "require_non_st": self.require_non_st,
         }, sort_keys=True)
 
 
@@ -50,6 +52,7 @@ class LiquidityUniverseRule:
     top_n: int
     rule_version: str = "liquidity_momentum_candidate_v1"
     min_listing_trading_days: int = 0
+    require_non_st: bool = False
 
     def __post_init__(self) -> None:
         if (not self.group_name.strip() or self.min_total_market_cap < 0 or self.max_total_market_cap is not None
@@ -69,6 +72,7 @@ class LiquidityUniverseRule:
             "ranking_metric": "close_return_with_liquidity_filter",
             "top_n": self.top_n,
             "min_listing_trading_days": self.min_listing_trading_days,
+            "require_non_st": self.require_non_st,
         }, sort_keys=True)
 
 
@@ -108,10 +112,15 @@ def _listing_age_is_eligible(ticker: str, as_of_trade_date: date, min_days: int,
     return sum(listing_dates[ticker] <= day <= as_of_trade_date for day in trading_days) >= min_days
 
 
+def _st_is_eligible(ticker: str, require_non_st: bool, st_flags: Optional[Mapping[str, bool]]) -> bool:
+    return not require_non_st or st_flags is not None and st_flags.get(ticker) is False
+
+
 def select_dynamic_universe(bars: Iterable[DayBar], market_caps: Mapping[str, Decimal],
                             as_of_trade_date: date, rule: DynamicUniverseRule,
                             listing_dates: Optional[Mapping[str, date]] = None,
-                            trading_days: Optional[Sequence[date]] = None) -> List[UniverseMember]:
+                            trading_days: Optional[Sequence[date]] = None,
+                            st_flags: Optional[Mapping[str, bool]] = None) -> List[UniverseMember]:
     """Use current market cap only for today's pool; returns use bars available by as-of date."""
     by_ticker: Dict[str, List[DayBar]] = {}
     for bar in bars:
@@ -122,7 +131,8 @@ def select_dynamic_universe(bars: Iterable[DayBar], market_caps: Mapping[str, De
         history = sorted(by_ticker.get(ticker, []), key=lambda bar: bar.trade_date)
         if (market_cap < rule.min_total_market_cap or len(history) <= rule.momentum_window_days
                 or not _listing_age_is_eligible(ticker, as_of_trade_date, rule.min_listing_trading_days,
-                                                 listing_dates, trading_days)):
+                                                 listing_dates, trading_days)
+                or not _st_is_eligible(ticker, rule.require_non_st, st_flags)):
             continue
         current, prior = history[-1].close, history[-rule.momentum_window_days - 1].close
         candidates.append((ticker, market_cap, (current / prior) - Decimal("1")))
@@ -134,7 +144,8 @@ def select_dynamic_universe(bars: Iterable[DayBar], market_caps: Mapping[str, De
 def select_liquidity_universe(bars: Iterable[DayBar], market_caps: Mapping[str, Decimal],
                               as_of_trade_date: date, rule: LiquidityUniverseRule,
                               listing_dates: Optional[Mapping[str, date]] = None,
-                              trading_days: Optional[Sequence[date]] = None) -> List[UniverseMember]:
+                              trading_days: Optional[Sequence[date]] = None,
+                              st_flags: Optional[Mapping[str, bool]] = None) -> List[UniverseMember]:
     """Select only from facts available at the decision close.
 
     This is intentionally a candidate pool. It does not infer ST status, listing
@@ -150,7 +161,8 @@ def select_liquidity_universe(bars: Iterable[DayBar], market_caps: Mapping[str, 
         if (market_cap < rule.min_total_market_cap
                 or rule.max_total_market_cap is not None and market_cap > rule.max_total_market_cap
                 or not _listing_age_is_eligible(ticker, as_of_trade_date, rule.min_listing_trading_days,
-                                                 listing_dates, trading_days)):
+                                                 listing_dates, trading_days)
+                or not _st_is_eligible(ticker, rule.require_non_st, st_flags)):
             continue
         history = sorted(by_ticker.get(ticker, []), key=lambda bar: bar.trade_date)
         if len(history) < required_history:
@@ -183,20 +195,22 @@ class UniverseService:
 
     def create_snapshot(self, market_cap_snapshot_id: str, as_of_trade_date: date,
                         rule: Union[DynamicUniverseRule, LiquidityUniverseRule], bars: Iterable[DayBar], created_at: datetime,
-                        listing_snapshot_id: Optional[str] = None) -> str:
+                        listing_snapshot_id: Optional[str] = None, st_backfill_run_id: Optional[str] = None) -> str:
         values = self.connection.execute("SELECT ticker, total_market_cap FROM market_cap_values WHERE market_cap_snapshot_id = ?",
                                          [market_cap_snapshot_id]).fetchall()
         caps = {ticker: Decimal(str(cap)) for ticker, cap in values}
         listing_dates, trading_days = self._listing_inputs(as_of_trade_date, rule, listing_snapshot_id)
-        members = (select_dynamic_universe(bars, caps, as_of_trade_date, rule, listing_dates, trading_days)
+        st_flags = self._st_flags(as_of_trade_date, rule, st_backfill_run_id)
+        members = (select_dynamic_universe(bars, caps, as_of_trade_date, rule, listing_dates, trading_days, st_flags)
                    if isinstance(rule, DynamicUniverseRule)
-                   else select_liquidity_universe(bars, caps, as_of_trade_date, rule, listing_dates, trading_days))
+                   else select_liquidity_universe(bars, caps, as_of_trade_date, rule, listing_dates, trading_days, st_flags))
         snapshot_id = str(uuid4())
         self.connection.execute(
             "INSERT INTO universe_snapshots (universe_snapshot_id, group_name, as_of_trade_date, "
-            "market_cap_snapshot_id, rule_version, rule_json, created_at, listing_snapshot_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "market_cap_snapshot_id, rule_version, rule_json, created_at, listing_snapshot_id, st_backfill_run_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [snapshot_id, rule.group_name, as_of_trade_date, market_cap_snapshot_id, rule.rule_version,
-             rule.as_json(), created_at, listing_snapshot_id],
+             rule.as_json(), created_at, listing_snapshot_id, st_backfill_run_id],
         )
         member_rows = [
             (snapshot_id, member.ticker, member.total_market_cap, member.momentum, member.rank)
@@ -224,6 +238,20 @@ class UniverseService:
             raise ValueError("local market calendar is insufficient for listing-age eligibility")
         return {ticker: list_date for ticker, list_date in rows}, trading_days
 
+    def _st_flags(self, as_of_trade_date: date, rule: Union[DynamicUniverseRule, LiquidityUniverseRule],
+                  st_backfill_run_id: Optional[str]) -> Optional[Mapping[str, bool]]:
+        if not rule.require_non_st:
+            return None
+        if not st_backfill_run_id:
+            raise ValueError("st_backfill_run_id is required when a universe enforces non-ST eligibility")
+        rows = self.connection.execute(
+            "SELECT ticker, is_st FROM st_history_daily WHERE backfill_run_id = ? AND trade_date = ?",
+            [st_backfill_run_id, as_of_trade_date],
+        ).fetchall()
+        if not rows:
+            raise ValueError("ST history is missing for the universe trade date")
+        return {ticker: bool(is_st) for ticker, is_st in rows}
+
     def create_fixed_snapshot(self, market_cap_snapshot_id: str, as_of_trade_date: date,
                               rule: FixedUniverseRule, created_at: datetime) -> str:
         """Persist an explicit membership set while retaining its cap-snapshot lineage."""
@@ -242,7 +270,8 @@ class UniverseService:
         snapshot_id = str(uuid4())
         self.connection.execute(
             "INSERT INTO universe_snapshots (universe_snapshot_id, group_name, as_of_trade_date, "
-            "market_cap_snapshot_id, rule_version, rule_json, created_at, listing_snapshot_id) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)",
+            "market_cap_snapshot_id, rule_version, rule_json, created_at, listing_snapshot_id, st_backfill_run_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL)",
             [snapshot_id, rule.group_name, as_of_trade_date, market_cap_snapshot_id,
              rule.rule_version, rule.as_json(), created_at],
         )

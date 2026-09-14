@@ -8,7 +8,7 @@ import pytest
 from quant_core.news import NewsArchive, NewsDocument, parse_macro_event_mapping, parse_risk_veto
 from quant_core.news_risk import validated_risk_veto
 from quant_core import world_news_source
-from quant_core.cninfo_source import _result as cninfo_result
+from quant_core.cninfo_source import _result as cninfo_result, cninfo_pdf_document_cached
 from quant_core.world_news_source import GdeltRequestError, gdelt_articles_cached, native_rss_articles_cached
 
 
@@ -93,6 +93,21 @@ def test_cninfo_documents_are_official_stock_evidence(tmp_path):
     assert document.source_type == "OFFICIAL_DISCLOSURE"
     assert document.evidence_role == "EVIDENCE_ELIGIBLE"
     assert document.source_url == "https://static.cninfo.com.cn/finalpage/2026-09-08/x.PDF"
+
+
+def test_cninfo_pdf_extraction_replaces_title_only_body(tmp_path, monkeypatch):
+    now = datetime(2026, 9, 8, 10, tzinfo=timezone.utc)
+    document = NewsDocument("cninfo_announcements", "STOCK", now, now, "重大事项公告", "重大事项公告", "600000.SH",
+                            source_url="https://static.cninfo.com.cn/finalpage/fixture.pdf")
+    class Page:
+        def extract_text(self): return "正式公告全文"
+    class Reader:
+        pages = [Page()]
+    monkeypatch.setattr("quant_core.cninfo_source._get_pdf_bytes", lambda _: b"%PDF-fixture")
+    monkeypatch.setattr("quant_core.cninfo_source.PdfReader", lambda _: Reader())
+    result = cninfo_pdf_document_cached(document, tmp_path)
+    assert "正式公告全文" in result.document.body
+    assert result.document.raw_artifact_sha256 == result.artifact_sha256
 
 
 def test_native_rss_hour_cache_creates_attributable_macro_documents(tmp_path):

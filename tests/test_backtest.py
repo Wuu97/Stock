@@ -187,3 +187,21 @@ def test_bulldozer_proxy_buys_next_open_then_requires_exit_on_following_open():
     ).fetchone()
     assert sell_date == buy_date + timedelta(days=1)
     assert connection.execute("SELECT COUNT(*) FROM bulldozer_exit_plans WHERE plan_status = 'FILLED'").fetchone()[0] >= 1
+
+
+def test_bulldozer_proxy_does_not_inherit_baseline_open_gap_filter():
+    connection = duckdb.connect(":memory:")
+    connection.execute(Path("sql/schema.sql").read_text())
+    start = date(2026, 1, 2)
+    days = [start + timedelta(days=index) for index in range(16)]
+    bars = [DayBar(day, "600000.SH", Decimal("10.5") if index == 12 else Decimal("10"),
+                   Decimal("10.7"), Decimal("9.8"), Decimal("10") + Decimal(index) / Decimal("100"),
+                   1000, Decimal("10000"), Decimal("20"), Decimal("1")) for index, day in enumerate(days)]
+    SettlementService(connection).create_account("bulldozer-gap", "test", Decimal("100000"), start)
+    spec = bulldozer_overnight_daily_proxy_spec(top_n=1)
+    replay_daily_strategy(
+        connection, bars, days, BacktestConfig("bulldozer-gap", days[11], days[-1], strategy_spec=spec),
+        FeeModel("test", Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0")),
+        ExitRule(), {"600000.SH"}, score_provider=resolve_score_provider(spec),
+    )
+    assert connection.execute("SELECT COUNT(*) FROM sim_order_intents WHERE reject_reason_code LIKE 'OPEN_GAP%'").fetchone()[0] == 0

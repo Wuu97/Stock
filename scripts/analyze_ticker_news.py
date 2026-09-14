@@ -37,11 +37,14 @@ def main() -> None:
         provider = DeepSeekProvider() if pending else None
         archive = NewsArchive(connection)
         high_risk = set()
-        for document_id, ticker, headline, body in pending:
+        for document_id, ticker, headline, body, text_source in pending:
             payload = provider.json_completion(PROMPT, json.dumps({
                 "document_id": document_id, "ticker": ticker, "headline": headline, "body": body,
+                "text_source": text_source,
             }, ensure_ascii=False))
             assessment = validated_risk_veto(payload, ticker, document_id)
+            payload = dict(payload)
+            payload["input_text_source"] = text_source
             archive.store_assessment(document_id, "RISK_VETO", "deepseek", provider.model, PROMPT_VERSION,
                                      payload, datetime.now(timezone.utc))
             if assessment.should_veto:
@@ -55,9 +58,14 @@ def main() -> None:
 def _eligible_documents(connection, tickers: tuple[str, ...], effective_as_of: datetime, latest_hours: int):
     placeholders = ",".join("?" for _ in tickers)
     return connection.execute(
-        f"SELECT document_id, ticker, headline, body FROM news_documents "
-        f"WHERE scope = 'STOCK' AND evidence_role = 'EVIDENCE_ELIGIBLE' AND ticker IN ({placeholders}) "
-        "AND published_at <= received_at AND received_at BETWEEN ? AND ? ORDER BY received_at, document_id",
+        "WITH latest_text AS (SELECT document_id, extracted_text, "
+        "ROW_NUMBER() OVER (PARTITION BY document_id ORDER BY created_at DESC, extraction_id DESC) AS row_no "
+        "FROM news_document_text_extractions WHERE extraction_status = 'SUCCESS') "
+        f"SELECT n.document_id, n.ticker, n.headline, COALESCE(x.extracted_text, n.body), "
+        "CASE WHEN x.document_id IS NULL THEN 'ARCHIVED_BODY' ELSE 'EXTRACTED_PDF' END FROM news_documents n "
+        "LEFT JOIN latest_text x ON x.document_id = n.document_id AND x.row_no = 1 "
+        f"WHERE n.scope = 'STOCK' AND n.evidence_role = 'EVIDENCE_ELIGIBLE' AND n.ticker IN ({placeholders}) "
+        "AND n.published_at <= n.received_at AND n.received_at BETWEEN ? AND ? ORDER BY n.received_at, n.document_id",
         [*tickers, effective_as_of - timedelta(hours=latest_hours), effective_as_of],
     ).fetchall()
 

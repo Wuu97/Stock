@@ -5,7 +5,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from scripts.daily_pipeline import _taxonomy_version, _tracked_tickers
+from scripts.daily_pipeline import _run_news_sources, _taxonomy_version, _tracked_tickers, _universe_tickers
 from quant_core.pipeline_audit import PipelineStore
 from quant_core.cost_models import load_cost_model
 
@@ -30,10 +30,36 @@ def test_pipeline_tracks_pending_and_held_symbols_and_uses_latest_taxonomy():
     assert _taxonomy_version(connection, "PINNED") == "PINNED"
 
 
+def test_universe_tickers_are_the_candidate_news_coverage_set(tmp_path):
+    db_path = tmp_path / "universe.duckdb"
+    connection = duckdb.connect(str(db_path)); connection.execute(Path("sql/schema.sql").read_text())
+    connection.execute("INSERT INTO market_cap_snapshots VALUES ('cap', ?, 'fixture', ?)", [datetime.now(timezone.utc), datetime.now(timezone.utc)])
+    connection.execute("INSERT INTO universe_snapshots VALUES ('universe', 'group', ?, 'cap', 'rule', ?, ?, NULL, NULL)", [date(2026, 9, 11), '{}', datetime.now(timezone.utc)])
+    connection.execute("INSERT INTO universe_members VALUES ('universe', '600000.SH', 1, 0, 1)")
+    connection.execute("INSERT INTO universe_members VALUES ('universe', '000001.SZ', 1, 0, 2)")
+    connection.close()
+    assert _universe_tickers(str(db_path), "universe") == ["000001.SZ", "600000.SH"]
+
+
 def test_cost_model_loader_uses_the_versioned_project_config():
     fee = load_cost_model("cost_a_share_2026_v1", Path("config/cost_models.yaml"))
     assert fee.version == "cost_a_share_2026_v1"
     assert fee.commission_rate == Decimal("0.00025")
+
+
+def test_news_sources_are_isolated_when_one_source_fails(monkeypatch):
+    calls = []
+    def fake_run(script, arguments):
+        calls.append(arguments)
+        if "gdelt" in arguments:
+            raise RuntimeError("429")
+        return {"stored": 1}
+    monkeypatch.setattr("scripts.daily_pipeline._run", fake_run)
+    results = _run_news_sources("db", date(2026, 9, 10), ["600000.SH"], ["official=https://example.test/feed"], ["geopolitics"])
+    assert results["cls"]["status"] == "SUCCEEDED"
+    assert results["cninfo"]["status"] == "SUCCEEDED"
+    assert results["rss:official"]["status"] == "SUCCEEDED"
+    assert results["gdelt:geopolitics"] == {"status": "FAILED", "reason": "429"}
 
 
 def test_pipeline_audit_reuses_successful_stage_and_records_non_blocking_failure(tmp_path):

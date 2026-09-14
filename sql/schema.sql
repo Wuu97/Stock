@@ -154,6 +154,60 @@ CREATE TABLE IF NOT EXISTS daily_bars (
     PRIMARY KEY (market_snapshot_id, trade_date, ticker)
 );
 
+-- Immutable intraday data is deliberately separate from daily snapshots.  A
+-- strategy must opt into one specific snapshot and may only query bars that
+-- had closed by its decision timestamp.
+CREATE TABLE IF NOT EXISTS intraday_market_snapshots (
+    intraday_snapshot_id VARCHAR PRIMARY KEY,
+    trade_date DATE NOT NULL,
+    bar_interval_minutes INTEGER NOT NULL CHECK (bar_interval_minutes IN (1, 5, 15, 60)),
+    source_channel VARCHAR NOT NULL,
+    source_published_at TIMESTAMPTZ NOT NULL,
+    received_at TIMESTAMPTZ NOT NULL,
+    manifest_path VARCHAR NOT NULL,
+    manifest_sha256 VARCHAR NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS intraday_bars (
+    intraday_snapshot_id VARCHAR NOT NULL REFERENCES intraday_market_snapshots(intraday_snapshot_id),
+    ticker VARCHAR NOT NULL,
+    bar_start_at TIMESTAMPTZ NOT NULL,
+    bar_end_at TIMESTAMPTZ NOT NULL,
+    open DECIMAL(20,4) NOT NULL,
+    high DECIMAL(20,4) NOT NULL,
+    low DECIMAL(20,4) NOT NULL,
+    close DECIMAL(20,4) NOT NULL,
+    volume BIGINT NOT NULL,
+    amount DECIMAL(20,4) NOT NULL,
+    status VARCHAR NOT NULL,
+    PRIMARY KEY (intraday_snapshot_id, ticker, bar_start_at),
+    CHECK (bar_end_at > bar_start_at)
+);
+
+-- One auction capture is one immutable five-level order-book observation.
+CREATE TABLE IF NOT EXISTS auction_quote_snapshots (
+    auction_snapshot_id VARCHAR PRIMARY KEY,
+    trade_date DATE NOT NULL,
+    ticker VARCHAR NOT NULL,
+    captured_at TIMESTAMPTZ NOT NULL,
+    source_channel VARCHAR NOT NULL,
+    source_published_at TIMESTAMPTZ NOT NULL,
+    received_at TIMESTAMPTZ NOT NULL,
+    raw_artifact_path VARCHAR NOT NULL,
+    raw_artifact_sha256 VARCHAR NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS auction_quote_levels (
+    auction_snapshot_id VARCHAR NOT NULL REFERENCES auction_quote_snapshots(auction_snapshot_id),
+    side VARCHAR NOT NULL CHECK (side IN ('BUY', 'SELL')),
+    level_number INTEGER NOT NULL CHECK (level_number BETWEEN 1 AND 5),
+    price DECIMAL(20,4),
+    quantity BIGINT NOT NULL CHECK (quantity >= 0),
+    PRIMARY KEY (auction_snapshot_id, side, level_number)
+);
+
 CREATE TABLE IF NOT EXISTS trading_status_snapshots (
     trading_status_snapshot_id VARCHAR PRIMARY KEY,
     source_channel VARCHAR NOT NULL,
@@ -196,7 +250,8 @@ CREATE TABLE IF NOT EXISTS universe_snapshots (
     rule_version VARCHAR NOT NULL,
     rule_json VARCHAR NOT NULL,
     created_at TIMESTAMPTZ NOT NULL,
-    listing_snapshot_id VARCHAR REFERENCES security_listing_snapshots(listing_snapshot_id)
+    listing_snapshot_id VARCHAR REFERENCES security_listing_snapshots(listing_snapshot_id),
+    st_backfill_run_id VARCHAR REFERENCES st_history_backfill_runs(backfill_run_id)
 );
 
 CREATE TABLE IF NOT EXISTS universe_members (
@@ -293,6 +348,53 @@ CREATE TABLE IF NOT EXISTS sim_order_intents (
     reject_reason_code VARCHAR,
     created_at TIMESTAMPTZ NOT NULL,
     UNIQUE (recommendation_item_id)
+);
+
+-- Generic execution orders are intentionally independent of sim_order_intents.
+-- The legacy table remains the daily-bar settlement contract, while this
+-- state machine records intraday/auction order life cycles and partial fills.
+CREATE TABLE IF NOT EXISTS execution_orders (
+    order_id VARCHAR PRIMARY KEY,
+    account_id VARCHAR NOT NULL REFERENCES sim_accounts(account_id),
+    strategy_id VARCHAR,
+    parent_order_id VARCHAR REFERENCES execution_orders(order_id),
+    ticker VARCHAR NOT NULL,
+    direction VARCHAR NOT NULL CHECK (direction IN ('BUY', 'SELL')),
+    order_type VARCHAR NOT NULL CHECK (order_type IN ('LIMIT', 'MARKET')),
+    time_in_force VARCHAR NOT NULL CHECK (time_in_force IN ('AUCTION_ONLY', 'DAY')),
+    target_shares BIGINT NOT NULL CHECK (target_shares > 0),
+    limit_price DECIMAL(20,4),
+    submitted_at TIMESTAMPTZ NOT NULL,
+    order_status VARCHAR NOT NULL CHECK (order_status IN ('SUBMITTED', 'ACTIVE', 'PARTIALLY_FILLED', 'FILLED', 'CANCELLED', 'REJECTED', 'EXPIRED')),
+    filled_shares BIGINT NOT NULL DEFAULT 0 CHECK (filled_shares >= 0),
+    terminal_reason_code VARCHAR,
+    execution_rule_version VARCHAR NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    CHECK ((order_type = 'MARKET' AND limit_price IS NULL) OR
+           (order_type = 'LIMIT' AND limit_price IS NOT NULL AND limit_price > 0)),
+    CHECK (filled_shares <= target_shares)
+);
+
+CREATE TABLE IF NOT EXISTS execution_order_events (
+    event_id VARCHAR PRIMARY KEY,
+    order_id VARCHAR NOT NULL REFERENCES execution_orders(order_id),
+    event_type VARCHAR NOT NULL CHECK (event_type IN ('SUBMITTED', 'ACTIVATED', 'PARTIAL_FILL', 'FILLED', 'CANCELLED', 'REJECTED', 'EXPIRED')),
+    event_at TIMESTAMPTZ NOT NULL,
+    observed_data_id VARCHAR,
+    reason_code VARCHAR,
+    details_json VARCHAR NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS execution_order_fills (
+    fill_id VARCHAR PRIMARY KEY,
+    order_id VARCHAR NOT NULL REFERENCES execution_orders(order_id),
+    fill_at TIMESTAMPTZ NOT NULL,
+    deal_price_unadj DECIMAL(20,4) NOT NULL CHECK (deal_price_unadj > 0),
+    deal_shares BIGINT NOT NULL CHECK (deal_shares > 0),
+    observed_data_id VARCHAR,
+    created_at TIMESTAMPTZ NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS sim_executions (
@@ -578,6 +680,21 @@ CREATE TABLE IF NOT EXISTS news_assessments (
     created_at TIMESTAMPTZ NOT NULL
 );
 
+-- Extraction is append-only and never rewrites the immutable archived fact.
+CREATE TABLE IF NOT EXISTS news_document_text_extractions (
+    extraction_id VARCHAR PRIMARY KEY,
+    document_id VARCHAR NOT NULL REFERENCES news_documents(document_id),
+    extractor_version VARCHAR NOT NULL,
+    extraction_status VARCHAR NOT NULL CHECK (extraction_status IN ('SUCCESS', 'OCR_REQUIRED', 'RETRYABLE_FAILURE')),
+    source_url VARCHAR NOT NULL,
+    artifact_sha256 VARCHAR,
+    extracted_text TEXT,
+    text_sha256 VARCHAR,
+    error_code VARCHAR,
+    created_at TIMESTAMPTZ NOT NULL,
+    UNIQUE (document_id, extractor_version)
+);
+
 -- Human review is append-only: a later correction never overwrites the model result
 -- or a previous reviewer decision.
 CREATE TABLE IF NOT EXISTS news_risk_review_events (
@@ -605,6 +722,25 @@ CREATE TABLE IF NOT EXISTS security_industry_memberships (
     valid_from DATE NOT NULL,
     valid_to DATE,
     PRIMARY KEY (taxonomy_version, ticker, valid_from),
+    FOREIGN KEY (taxonomy_version, industry_code) REFERENCES sw_industry_taxonomy(taxonomy_version, industry_code)
+);
+
+-- Curated, point-in-time company sensitivity to an industry event.  Absence of
+-- a record is intentional: event overlays must not assume every constituent
+-- has identical exposure to an industry shock.
+CREATE TABLE IF NOT EXISTS security_event_exposures (
+    exposure_version VARCHAR NOT NULL,
+    ticker VARCHAR NOT NULL,
+    taxonomy_version VARCHAR NOT NULL,
+    industry_code VARCHAR NOT NULL,
+    valid_from DATE NOT NULL,
+    valid_to DATE,
+    exposure_weight DECIMAL(10,8) NOT NULL CHECK (exposure_weight > 0 AND exposure_weight <= 1),
+    rationale TEXT NOT NULL,
+    source_reference VARCHAR NOT NULL,
+    reviewed_by VARCHAR NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (exposure_version, ticker, taxonomy_version, industry_code, valid_from),
     FOREIGN KEY (taxonomy_version, industry_code) REFERENCES sw_industry_taxonomy(taxonomy_version, industry_code)
 );
 

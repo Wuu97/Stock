@@ -2,6 +2,14 @@
 
 from decimal import Decimal
 import json
+from pathlib import Path
+
+
+MONITORING_GROUPS = (
+    "large_cap_momentum",
+    "long_term_liquid_candidate",
+    "event_elasticity_candidate",
+)
 
 
 def load_dashboard(connection, account_id: str) -> dict:
@@ -133,6 +141,55 @@ def _summary(connection, account_id, nav):
     return {"cash": _number(cash), "market_value": _number(market_value), "equity": _number(equity), "max_drawdown": _number(drawdown)}
 
 
+def load_monitoring_research(connection) -> dict:
+    """Return the latest immutable snapshots and recommendations for research groups."""
+    placeholders = ",".join("?" for _ in MONITORING_GROUPS)
+    snapshots = connection.execute(
+        "WITH ranked AS ("
+        "SELECT u.universe_snapshot_id, u.group_name, u.as_of_trade_date, u.market_cap_snapshot_id, "
+        "u.listing_snapshot_id, u.st_backfill_run_id, u.rule_version, u.rule_json, u.created_at, "
+        "ROW_NUMBER() OVER (PARTITION BY u.group_name ORDER BY u.as_of_trade_date DESC, u.created_at DESC) AS row_no "
+        "FROM universe_snapshots u WHERE u.group_name IN (" + placeholders + ")"
+        ") SELECT r.universe_snapshot_id, r.group_name, r.as_of_trade_date, r.market_cap_snapshot_id, "
+        "r.listing_snapshot_id, r.st_backfill_run_id, r.rule_version, r.rule_json, r.created_at, COUNT(m.ticker) "
+        "FROM ranked r LEFT JOIN universe_members m ON m.universe_snapshot_id = r.universe_snapshot_id "
+        "WHERE r.row_no = 1 GROUP BY 1,2,3,4,5,6,7,8,9 ORDER BY r.group_name",
+        list(MONITORING_GROUPS),
+    ).fetchall()
+    strategy_ids = [f"momentum_trend_{name}" for name in MONITORING_GROUPS]
+    recommendations = connection.execute(
+        "WITH ranked_runs AS ("
+        "SELECT r.run_id, r.strategy_id, r.target_trade_date, r.effective_as_of_timestamp, r.created_at, "
+        "ROW_NUMBER() OVER (PARTITION BY r.strategy_id ORDER BY r.target_trade_date DESC, r.created_at DESC) AS row_no "
+        "FROM recommendation_runs r WHERE r.run_status = 'FROZEN' AND r.strategy_id IN ("
+        + ",".join("?" for _ in strategy_ids) + ")"
+        ") SELECT r.strategy_id, r.run_id, r.target_trade_date, r.effective_as_of_timestamp, i.rank_order, i.ticker, "
+        "COALESCE(s.security_name, i.ticker), i.rank_score, i.ref_close_unadj "
+        "FROM ranked_runs r JOIN recommendation_items i ON i.run_id = r.run_id "
+        "LEFT JOIN security_master s ON s.ticker = i.ticker WHERE r.row_no = 1 "
+        "ORDER BY r.strategy_id, i.rank_order",
+        strategy_ids,
+    ).fetchall()
+    snapshot_rows = []
+    for row in snapshots:
+        (snapshot_id, group_name, as_of_date, cap_id, listing_id, st_id, rule_version,
+         rule_json, created_at, member_count) = row
+        snapshot_rows.append({
+            "group": group_name, "snapshot_id": snapshot_id, "as_of_date": str(as_of_date),
+            "market_cap_snapshot_id": cap_id, "listing_snapshot_id": listing_id,
+            "st_backfill_run_id": st_id, "rule_version": rule_version,
+            "rule": json.loads(rule_json), "created_at": str(created_at), "member_count": member_count,
+        })
+    recommendation_rows = []
+    for strategy_id, run_id, target_date, effective_as_of, rank, ticker, name, score, close in recommendations:
+        recommendation_rows.append({
+            "group": strategy_id.removeprefix("momentum_trend_"), "run_id": run_id,
+            "target_date": str(target_date), "effective_as_of": str(effective_as_of), "rank": rank,
+            "ticker": ticker, "security_name": name, "score": _number(score), "reference_close": _number(close),
+        })
+    return {"snapshots": snapshot_rows, "recommendations": recommendation_rows}
+
+
 def load_activity(connection, account_id: str) -> dict:
     """Return immutable order, execution and rejection records for presentation."""
     orders = connection.execute(
@@ -227,6 +284,7 @@ def load_news_monitor(connection, limit: int = 50) -> dict:
         "WHERE a.task_type = 'RISK_VETO' ORDER BY a.created_at DESC LIMIT ?", [limit]
     ).fetchall()
     review_summary = _risk_review_summary(connection)
+    health = _news_health(connection)
     return {
         "documents": [{"id": doc_id, "source": source, "published_at": str(published), "received_at": str(received),
                        "headline": headline, "url": url, "artifact_sha256": artifact}
@@ -249,7 +307,61 @@ def load_news_monitor(connection, limit: int = 50) -> dict:
                               "rationale": rationale, "created_at": str(reviewed_at)}}
                              for assessment_id, ticker, headline, result_json, created, label, reviewer, rationale, reviewed_at in risk_rows],
         "risk_review_summary": review_summary,
+        "health": health,
     }
+
+
+def _news_health(connection) -> dict:
+    """Expose read-only coverage and source-failure signals for the news pipeline."""
+    rows = connection.execute(
+        "SELECT source_channel, scope, COUNT(*), MAX(received_at) FROM news_documents "
+        "GROUP BY source_channel, scope ORDER BY source_channel, scope"
+    ).fetchall()
+    sources = [{"source": source, "scope": scope, "document_count": count, "latest_received_at": str(latest)}
+               for source, scope, count, latest in rows]
+    latest_received = connection.execute("SELECT MAX(received_at) FROM news_documents").fetchone()[0]
+    stock_documents = connection.execute("SELECT COUNT(*) FROM news_documents WHERE scope = 'STOCK'").fetchone()[0]
+    failed_sources = connection.execute(
+        "WITH latest AS (SELECT source_channel, requested_at, http_status, "
+        "ROW_NUMBER() OVER (PARTITION BY source_channel ORDER BY requested_at DESC, request_id DESC) AS row_no "
+        "FROM external_request_audit) "
+        "SELECT source_channel, requested_at FROM latest WHERE row_no = 1 "
+        "AND (http_status IS NULL OR http_status < 200 OR http_status >= 300) ORDER BY source_channel"
+    ).fetchall()
+    pdf_row = connection.execute(
+        "SELECT COUNT(*), SUM(CASE WHEN http_status BETWEEN 200 AND 299 THEN 1 ELSE 0 END), "
+        "SUM(CASE WHEN http_status IS NULL OR http_status < 200 OR http_status >= 300 THEN 1 ELSE 0 END), MAX(requested_at) "
+        "FROM external_request_audit WHERE source_channel = 'cninfo_pdf'"
+    ).fetchone()
+    coverage = _latest_news_coverage(connection)
+    alerts = []
+    if stock_documents == 0:
+        alerts.append("NO_STOCK_NEWS")
+    if latest_received is None:
+        alerts.append("NO_NEWS_ARCHIVED")
+    if failed_sources:
+        alerts.append("SOURCE_FAILURES")
+    return {"latest_received_at": None if latest_received is None else str(latest_received),
+            "stock_document_count": stock_documents, "failed_sources": [{"source": source, "last_failed_at": str(at)}
+                                                                          for source, at in failed_sources],
+            "cninfo_pdf": {"attempted": pdf_row[0], "succeeded": int(pdf_row[1] or 0), "failed": int(pdf_row[2] or 0),
+                           "last_attempt_at": None if pdf_row[3] is None else str(pdf_row[3])},
+            "coverage": coverage,
+            "alerts": alerts, "sources": sources}
+
+
+def _latest_news_coverage(connection) -> dict:
+    row = connection.execute(
+        "SELECT s.artifact_reference FROM pipeline_run_stages s JOIN pipeline_runs r USING(pipeline_run_id) "
+        "WHERE s.stage_name = 'news' AND s.stage_status = 'SUCCEEDED' ORDER BY r.trade_date DESC, s.completed_at DESC LIMIT 1"
+    ).fetchone()
+    if row is None or not row[0]:
+        return {}
+    try:
+        payload = json.loads(Path(row[0]).read_text(encoding="utf-8"))
+        return payload.get("coverage", {})
+    except (OSError, ValueError, TypeError):
+        return {}
 
 
 def _risk_review_summary(connection) -> dict:

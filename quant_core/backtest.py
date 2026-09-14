@@ -8,7 +8,8 @@ from uuid import uuid4
 
 from .daily_risk import create_exit_intents
 from .bulldozer import BulldozerConfig, build_bulldozer_features_by_day
-from .bulldozer_exit import reconcile_mandatory_exit_plans, schedule_mandatory_exits_for_new_lots
+from .bulldozer_exit import (ensure_bulldozer_exit_schema, reconcile_mandatory_exit_plans,
+                             schedule_mandatory_exits_for_new_lots)
 from .features import FeatureRow
 from .matching import OpenGapPolicy
 from .models import DayBar, FeeModel, OrderIntent
@@ -32,7 +33,7 @@ class BacktestConfig:
     portfolio_policy: PortfolioPolicy = field(
         default_factory=lambda: PortfolioPolicy.equal_weight(5, Decimal("0.05"))
     )
-    open_gap_policy: OpenGapPolicy = field(default_factory=OpenGapPolicy)
+    open_gap_policy: Optional[OpenGapPolicy] = field(default_factory=OpenGapPolicy)
 
 
 def replay_daily_strategy(connection, bars: Iterable[DayBar], trading_days: Sequence[date],
@@ -61,12 +62,16 @@ def replay_daily_strategy(connection, bars: Iterable[DayBar], trading_days: Sequ
     feature_calendar = tuple(sorted({bar.trade_date for bar in all_bars if bar.trade_date <= config.end_date}))
     service = SettlementService(connection)
     spec = config.strategy_spec or baseline_strategy_spec(config.volume_multiple, config.top_n)
+    if spec.provider_type == BULLDOZER_OVERNIGHT_PROVIDER_TYPE:
+        ensure_bulldozer_exit_schema(connection)
     features_by_day = (build_bulldozer_features_by_day(all_bars, feature_calendar,
                                                         BulldozerConfig(top_n=int(spec.parameters["top_n"]),
-                                                                        consecutive_ma5_days=int(spec.parameters["consecutive_ma5_days"])))
+                                                                        consecutive_ma5_days=int(spec.parameters["consecutive_ma5_days"]),
+                                                                        benchmark_ticker=str(spec.parameters["benchmark_ticker"])))
                        if spec.provider_type == BULLDOZER_OVERNIGHT_PROVIDER_TYPE
                        else _build_feature_rows_by_day(all_bars, feature_calendar, config.lookback_days))
     provider = score_provider or resolve_score_provider(spec)
+    execution_gap_policy = None if spec.provider_type == BULLDOZER_OVERNIGHT_PROVIDER_TYPE else config.open_gap_policy
     policy = config.portfolio_policy
     if provider.spec != spec:
         raise ValueError("score provider spec does not match backtest config")
@@ -81,7 +86,7 @@ def replay_daily_strategy(connection, bars: Iterable[DayBar], trading_days: Sequ
             ticker: bar.close for ticker, bar in by_day[calendar[index - 1]].items()
         }
         _settle_pending(connection, service, config.account_id, by_day[trade_date], trade_date, next_day, fee,
-                        suspended, prior_closes, config.open_gap_policy)
+                        suspended, prior_closes, execution_gap_policy)
         if spec.provider_type == BULLDOZER_OVERNIGHT_PROVIDER_TYPE:
             forced_exit_deferrals += reconcile_mandatory_exit_plans(connection, config.account_id, trade_date, next_day)
             if next_day is not None:
@@ -125,7 +130,7 @@ def replay_daily_strategy(connection, bars: Iterable[DayBar], trading_days: Sequ
 def _settle_pending(connection, service: SettlementService, account_id: str,
                     day_bars: Mapping[str, DayBar], trade_date: date, next_day: Optional[date],
                     fee: FeeModel, suspended_tickers: Set[str], prior_closes: Mapping[str, Decimal],
-                    open_gap_policy: OpenGapPolicy) -> None:
+                    open_gap_policy: Optional[OpenGapPolicy]) -> None:
     rows = connection.execute(
         "SELECT intent_id, ticker, direction, target_shares FROM sim_order_intents "
         "WHERE account_id = ? AND target_trade_date = ? AND order_status = 'PENDING' ORDER BY intent_id",

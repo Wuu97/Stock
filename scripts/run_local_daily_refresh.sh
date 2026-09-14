@@ -13,7 +13,7 @@ PIPELINE_STATUS=0
   --db data/top50/quant.duckdb \
   --account-id top50_forward_account \
   --taxonomy-version SW2021_TUSHARE_20260908 \
-  --rss-feed "un_news=https://news.un.org/feed/subscribe/en/news/all/rss.xml" \
+  --news-source-config config/news_sources.json \
   --gdelt-query geopolitics \
   --gdelt-query "export control" \
   --gdelt-query "natural disaster" \

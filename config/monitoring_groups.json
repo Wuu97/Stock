@@ -6,7 +6,8 @@
       "min_total_market_cap": "80000000000",
       "momentum_window_days": 30,
       "top_n": 50,
-      "min_listing_trading_days": 60
+      "min_listing_trading_days": 60,
+      "require_non_st": true
     },
     {
       "name": "long_term_liquid_candidate",
@@ -20,6 +21,7 @@
       "min_momentum": null,
       "top_n": 5000,
       "min_listing_trading_days": 60,
+      "require_non_st": true,
       "eligibility_note": "Candidate pool only: PIT ST and listing-age gates are required before any trading use."
     },
     {
@@ -34,6 +36,7 @@
       "min_momentum": "0.05",
       "top_n": 100,
       "min_listing_trading_days": 60,
+      "require_non_st": true,
       "eligibility_note": "Candidate pool only: requires independent news/event evidence and stricter execution gates before trading use."
     },
     {

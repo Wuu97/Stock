@@ -1,10 +1,10 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
 import duckdb
 
-from quant_core.dashboard import load_activity, load_dashboard, load_news_monitor
+from quant_core.dashboard import load_activity, load_dashboard, load_monitoring_research, load_news_monitor
 from quant_core.news import NewsArchive, NewsDocument
 from quant_core.news_clustering import cluster_documents
 from quant_core.models import FeeModel, OrderIntent
@@ -59,3 +59,34 @@ def test_news_monitor_returns_immutable_facts_and_request_audit():
     assert monitor["documents"][0]["artifact_sha256"] == "a" * 64
     assert monitor["requests"][0]["status"] == 200
     assert monitor["clusters"][0]["representative_count"] == 1
+    assert monitor["health"]["stock_document_count"] == 0
+    assert "NO_STOCK_NEWS" in monitor["health"]["alerts"]
+    assert monitor["health"]["cninfo_pdf"]["attempted"] == 0
+
+
+def test_news_health_only_alerts_when_a_source_latest_request_failed():
+    connection = duckdb.connect(":memory:")
+    connection.execute(Path("sql/schema.sql").read_text())
+    now = datetime(2026, 9, 14, tzinfo=timezone.utc)
+    connection.execute("INSERT INTO external_request_audit VALUES ('old-failure', 'fixture', 'a', ?, 1, 429, false, 0, NULL, NULL, 'RATE_LIMIT', ?)", [now, now])
+    connection.execute("INSERT INTO external_request_audit VALUES ('recovery', 'fixture', 'b', ?, 1, 200, false, 0, NULL, NULL, NULL, ?)", [now + timedelta(minutes=1), now + timedelta(minutes=1)])
+    assert load_news_monitor(connection)["health"]["failed_sources"] == []
+
+
+def test_monitoring_research_returns_latest_group_snapshot_and_recommendation():
+    connection = duckdb.connect(":memory:")
+    connection.execute(Path("sql/schema.sql").read_text())
+    now = datetime(2026, 9, 14, tzinfo=timezone.utc)
+    connection.execute("INSERT INTO market_cap_snapshots VALUES ('cap', ?, 'fixture', ?)", [now, now])
+    connection.execute("INSERT INTO universe_snapshots VALUES ('universe', 'large_cap_momentum', ?, 'cap', 'v1', ?, ?, NULL, NULL)",
+                       [date(2026, 9, 11), '{"require_non_st": true}', now])
+    connection.execute("INSERT INTO universe_members VALUES ('universe', '600000.SH', 90000000000, 0.1, 1)")
+    connection.execute("INSERT INTO feature_snapshots VALUES ('feature', ?, 20, 'h', 'p', 'h', ?, ?)",
+                       [date(2026, 9, 11), now, now])
+    connection.execute("INSERT INTO recommendation_runs VALUES ('run', ?, 'momentum_trend_large_cap_momentum', 'v1', 'cost', 'feature', ?, 'FROZEN', NULL, ?)",
+                       [date(2026, 9, 14), now, now])
+    connection.execute("INSERT INTO recommendation_items VALUES ('item', 'run', '600000.SH', 1, 0.9, 10, '{}', ?)", [now])
+    research = load_monitoring_research(connection)
+    assert research["snapshots"][0]["group"] == "large_cap_momentum"
+    assert research["snapshots"][0]["member_count"] == 1
+    assert research["recommendations"][0]["ticker"] == "600000.SH"

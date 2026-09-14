@@ -3,12 +3,18 @@ strategy:
   version: daily_proxy_v1
   documented_rules:
     consecutive_ma5_days: 8
+    benchmark_ticker: "000001.SH"
     maximum_new_capital_fraction: "0.50"
     entry: next_open_daily_proxy
     exit: next_trading_day_open_mandatory_no_limit_up_exception
+    opening_gap_filter: UNSPECIFIED_NOT_APPLIED
   intentionally_unmodeled:
     - 形态美观
     - 五不选阈值
     - 主线
-    - 集合竞价盘口
-    - 盘中MACD九转
+    - 15分钟九转和盘中MACD
+  rule_applicability:
+    auction_orderbook_seal_strength:
+      status: NOT_APPLICABLE
+      reason_code: REALTIME_FIVE_LEVEL_ORDER_BOOK_UNAVAILABLE
+      effect: NOT_USED_FOR_SELECTION_OR_ENTRY_OR_EXIT

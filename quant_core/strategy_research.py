@@ -146,7 +146,8 @@ class BulldozerOvernightScoreProvider:
         parameters = self.spec.parameters
         try:
             config = BulldozerConfig(top_n=int(parameters["top_n"]),
-                                     consecutive_ma5_days=int(parameters["consecutive_ma5_days"]))
+                                     consecutive_ma5_days=int(parameters["consecutive_ma5_days"]),
+                                     benchmark_ticker=str(parameters["benchmark_ticker"]))
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError("bulldozer strategy requires top_n and consecutive_ma5_days") from error
         qualified = [row for row in features if row.close_above_ma5_run_length >= config.consecutive_ma5_days]
@@ -155,8 +156,14 @@ class BulldozerOvernightScoreProvider:
             "provider": BULLDOZER_OVERNIGHT_PROVIDER_TYPE,
             "close": str(row.close), "ma5": str(row.ma5), "bias_ma5": str(row.bias_ma5),
             "close_above_ma5_run_length": row.close_above_ma5_run_length,
+            "market_daily_td_sequential": (f"{row.market_td_direction}_{row.market_td_count}"
+                                             if row.market_td_direction != "NONE" else "NONE"),
+            "td_benchmark_ticker": config.benchmark_ticker,
+            "td_usage": "SHANGHAI_COMPOSITE_DAILY_AUXILIARY_LABEL_NO_UNSPECIFIED_PRECEDENCE",
+            "td_scope": "CLOSE_COMPARISON_SETUP_ONLY_HIGH_LOW_NINE_CONFIRMATION_PENDING",
             "source_rule": "连续8天沿着五日均线向上",
-            "unmodeled_source_rules": ["形态美观", "五不选阈值", "主线", "竞价", "盘中MACD九转"],
+            "unmodeled_source_rules": ["形态美观", "五不选阈值", "主线", "竞价", "15分钟九转", "盘中MACD"],
+            "rule_applicability": parameters["rule_applicability"],
         }) for index, row in enumerate(ranked, start=1))
         return StrategyResult(self.spec, as_of_trade_date, picks)
 
@@ -234,13 +241,22 @@ def pure_momentum_strategy_spec(top_n: int) -> StrategySpec:
                         json.dumps({"top_n": top_n}, sort_keys=True, separators=(",", ":")))
 
 
-def bulldozer_overnight_daily_proxy_spec(top_n: int = 5, consecutive_ma5_days: int = 8) -> StrategySpec:
+def bulldozer_overnight_daily_proxy_spec(top_n: int = 5, consecutive_ma5_days: int = 8,
+                                         benchmark_ticker: str = "000001.SH") -> StrategySpec:
     """Frozen daily proxy; later execution layers must use a new strategy version."""
     parameters = {
         "top_n": top_n,
         "consecutive_ma5_days": consecutive_ma5_days,
+        "benchmark_ticker": benchmark_ticker,
         "entry": "next_open_daily_proxy",
         "exit": "next_trading_day_open_mandatory_no_limit_up_exception",
+        "rule_applicability": {
+            "auction_orderbook_seal_strength": {
+                "status": "NOT_APPLICABLE",
+                "reason_code": "REALTIME_FIVE_LEVEL_ORDER_BOOK_UNAVAILABLE",
+                "effect": "NOT_USED_FOR_SELECTION_OR_ENTRY_OR_EXIT",
+            },
+        },
     }
     return StrategySpec("bulldozer_overnight_v1", "daily_proxy_v1", BULLDOZER_OVERNIGHT_PROVIDER_TYPE,
                         json.dumps(parameters, sort_keys=True, separators=(",", ":")))

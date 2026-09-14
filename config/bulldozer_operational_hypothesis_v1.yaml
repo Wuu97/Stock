@@ -1,0 +1,59 @@
+# This is not a transcription of the source material.  It is a separately
+# versioned research hypothesis.  No entry may be described as an author rule
+# unless provenance is SOURCE_EXPLICIT.
+strategy:
+  id: bulldozer_operational_hypothesis_v1
+  version: v1
+  relationship_to_source: ANALYST_ASSUMPTION_LAYER_OVER_EVIDENCE_LOCKED_SOURCE
+  immutable_research_policy: NO_PARAMETER_OPTIMIZATION
+  assumptions:
+    ma5_trend_days:
+      status: ACTIVE
+      value: 8
+      provenance: SOURCE_EXAMPLE_NOT_FIXED_RULE
+      rationale: Reproducible starting definition for the article's "沿五日线向上" example.
+    candidate_ranking:
+      status: ACTIVE
+      value: LOWEST_POSITIVE_MA5_BIAS_FIRST
+      provenance: ENGINEERING_TIE_BREAKER
+      rationale: A deterministic tie-breaker; it is not claimed to be the author's ranking method.
+    maximum_new_capital_fraction:
+      status: ACTIVE
+      value: "0.50"
+      provenance: SOURCE_EXPLICIT
+    mandatory_next_trading_day_exit:
+      status: ACTIVE
+      value: NEXT_OPEN_DAILY_PROXY
+      provenance: DAILY_PROXY_EXECUTION_ASSUMPTION
+      rationale: Replaced only when auditable intraday exit data is available.
+    ma5_bias_cap:
+      status: PROPOSED_NOT_ACTIVE
+      value: "0.03"
+      provenance: ANALYST_ASSUMPTION
+    prior_day_gain_cap:
+      status: PROPOSED_NOT_ACTIVE
+      value: "0.06"
+      provenance: ANALYST_ASSUMPTION
+    five_day_limit_up_count_cap:
+      status: PROPOSED_NOT_ACTIVE
+      value: 1
+      provenance: ANALYST_ASSUMPTION
+    normalized_atr10_floor:
+      status: PROPOSED_NOT_ACTIVE
+      value: "0.01"
+      provenance: ANALYST_ASSUMPTION
+  unavailable_rules:
+    auction_orderbook_seal_strength:
+      status: NOT_APPLICABLE
+      reason_code: REALTIME_FIVE_LEVEL_ORDER_BOOK_UNAVAILABLE
+      effect: NOT_USED_FOR_SELECTION_OR_ENTRY_OR_EXIT
+    historical_auction_fill_queue:
+      status: NOT_APPLICABLE
+      reason_code: HISTORICAL_AUCTION_ORDER_QUEUE_UNAVAILABLE
+      effect: NO_CLAIM_OF_ORIGINAL_AUCTION_FILL_FIDELITY
+  pending_source_clarifications:
+    - five_no_select_numeric_thresholds
+    - post_open_ma5_support_confirmation
+    - limit_up_hold_exception_and_reopen_exit
+    - exit_batch_weights_and_5min_macd_parameters
+    - 15min_td_precedence_against_ma5_and_macd

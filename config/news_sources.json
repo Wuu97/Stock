@@ -1,0 +1,25 @@
+{
+  "version": "official_macro_sources_v1",
+  "sources": [
+    {
+      "channel": "un_news",
+      "feed_url": "https://news.un.org/feed/subscribe/en/news/all/rss.xml",
+      "official_domain": "news.un.org",
+      "enabled": true
+    },
+    {
+      "channel": "sastind_work",
+      "feed_url": "https://www.sastind.gov.cn/n10118180/rss.xml",
+      "official_domain": "sastind.gov.cn",
+      "enabled": false,
+      "validation_status": "EMPTY_FEED_20260914"
+    },
+    {
+      "channel": "sastind_policy",
+      "feed_url": "https://www.sastind.gov.cn/n10086167/n10086221/rss.xml",
+      "official_domain": "sastind.gov.cn",
+      "enabled": false,
+      "validation_status": "TLS_TIMEOUT_20260914"
+    }
+  ]
+}

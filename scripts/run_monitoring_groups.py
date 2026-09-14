@@ -24,6 +24,7 @@ def main() -> None:
     parser.add_argument("--market-snapshot-id", required=True, action="append")
     parser.add_argument("--market-cap-snapshot-id", required=True)
     parser.add_argument("--listing-snapshot-id", help="Immutable listing reference required by groups with listing-age gates")
+    parser.add_argument("--st-backfill-run-id", help="Completed BaoStock ST history required by groups with non-ST gates")
     parser.add_argument("--groups-config", default="config/monitoring_groups.json")
     parser.add_argument("--group-name", action="append", dest="group_names",
                         help="Freeze only the named configured group; repeat for multiple groups")
@@ -76,9 +77,10 @@ def main() -> None:
         if group_type == "dynamic":
             rule = DynamicUniverseRule(group["name"], Decimal(str(group["min_total_market_cap"])),
                                        int(group["momentum_window_days"]), int(group["top_n"]),
-                                       min_listing_trading_days=int(group.get("min_listing_trading_days", 0)))
+                                       min_listing_trading_days=int(group.get("min_listing_trading_days", 0)),
+                                       require_non_st=bool(group.get("require_non_st", False)))
             universe_id = universes.create_snapshot(args.market_cap_snapshot_id, as_of_date, rule, bars, now,
-                                                     args.listing_snapshot_id)
+                                                     args.listing_snapshot_id, args.st_backfill_run_id)
         elif group_type == "liquidity_dynamic":
             rule = LiquidityUniverseRule(
                 group["name"], Decimal(str(group.get("min_total_market_cap", "0"))),
@@ -87,9 +89,10 @@ def main() -> None:
                 int(group.get("momentum_window_days", 20)),
                 None if group.get("min_momentum") is None else Decimal(str(group["min_momentum"])),
                 int(group["top_n"]), min_listing_trading_days=int(group.get("min_listing_trading_days", 0)),
+                require_non_st=bool(group.get("require_non_st", False)),
             )
             universe_id = universes.create_snapshot(args.market_cap_snapshot_id, as_of_date, rule, bars, now,
-                                                     args.listing_snapshot_id)
+                                                     args.listing_snapshot_id, args.st_backfill_run_id)
         elif group_type == "fixed":
             rule = FixedUniverseRule(group["name"], group["tickers"])
             universe_id = universes.create_fixed_snapshot(args.market_cap_snapshot_id, as_of_date, rule, now)

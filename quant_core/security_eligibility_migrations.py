@@ -3,6 +3,7 @@
 
 def apply_security_eligibility_migrations(connection) -> None:
     connection.execute("ALTER TABLE universe_snapshots ADD COLUMN IF NOT EXISTS listing_snapshot_id VARCHAR")
+    connection.execute("ALTER TABLE universe_snapshots ADD COLUMN IF NOT EXISTS st_backfill_run_id VARCHAR")
     connection.execute(
         "CREATE TABLE IF NOT EXISTS security_listing_snapshots ("
         "listing_snapshot_id VARCHAR PRIMARY KEY, source_channel VARCHAR NOT NULL, raw_artifact_path VARCHAR NOT NULL, "

@@ -8,7 +8,7 @@ import altair as alt
 import duckdb
 import streamlit as st
 
-from quant_core.dashboard import load_activity, load_dashboard, load_news_monitor, load_track_evaluations
+from quant_core.dashboard import load_activity, load_dashboard, load_monitoring_research, load_news_monitor, load_track_evaluations
 
 
 def _read(db_path: Path, account_id: str):
@@ -20,7 +20,7 @@ def _read_once(db_path: Path, account_id: str):
     connection = duckdb.connect(str(db_path), read_only=True)
     try:
         return (load_dashboard(connection, account_id), load_activity(connection, account_id),
-                load_news_monitor(connection), load_track_evaluations(connection))
+                load_monitoring_research(connection), load_news_monitor(connection), load_track_evaluations(connection))
     finally:
         connection.close()
 
@@ -153,7 +153,7 @@ def main() -> None:
         st.caption("生产基线参与模拟撮合；影子策略仅作对照研究。")
 
     try:
-        data, activity, news, track_evaluations = _read(db_path, account_id)
+        data, activity, monitoring, news, track_evaluations = _read(db_path, account_id)
     except Exception as error:
         st.error(f"无法读取看板：{error}")
         return
@@ -195,8 +195,8 @@ def main() -> None:
             icon = {"SUCCEEDED": "✅", "SKIPPED": "⏭️", "FAILED": "🚨", "RUNNING": "⏳"}.get(refresh["status"], "ℹ️")
             st.info(f"{icon} 数据发布：{refresh['status']} · {refresh['trade_date']}")
 
-    overview, positions_tab, activity_tab, nav_tab, strategy_tab, research_tab = st.tabs(
-        ["首页", "我的持仓", "风控与订单", "资产净值", "策略", "研究与审计"]
+    overview, positions_tab, activity_tab, nav_tab, strategy_tab, monitoring_tab, research_tab = st.tabs(
+        ["首页", "我的持仓", "风控与订单", "资产净值", "策略", "研究分组", "研究与审计"]
     )
     with overview:
         left, right = st.columns((2, 1))
@@ -277,6 +277,36 @@ def main() -> None:
                 st.dataframe([{"目标日": row["target_date"], "代码": row["ticker"], "名称": row["security_name"], "排名": row["rank"], "预测超额收益": _percent(row["score"])} for row in ml_shadow["recommendations"]], hide_index=True, width="stretch")
             else:
                 _empty("模型已登记，尚无冻结的 ML 影子推荐。")
+    with monitoring_tab:
+        st.subheader("每日研究分组")
+        st.caption("三个分组均为收盘后冻结的研究结果；不创建模拟账户订单。股票池缺少上市或 ST 证据时会被拒绝生成。")
+        if not monitoring["snapshots"]:
+            _empty("尚无分组研究快照；下一次日终研究阶段完成后会显示。")
+        else:
+            st.dataframe([{
+                "分组": row["group"], "截至日期": row["as_of_date"], "股票池": row["member_count"],
+                "上市证据": "已关联" if row["listing_snapshot_id"] else "缺失",
+                "ST 证据": "已关联" if row["st_backfill_run_id"] else "缺失",
+                "快照 ID": row["snapshot_id"][:12],
+            } for row in monitoring["snapshots"]], hide_index=True, width="stretch")
+            selected_group = st.selectbox("查看分组", [row["group"] for row in monitoring["snapshots"]], key="monitoring_group")
+            snapshot = next(row for row in monitoring["snapshots"] if row["group"] == selected_group)
+            st.caption(" · ".join([
+                f"规则版本：{snapshot['rule_version']}",
+                f"市值快照：{snapshot['market_cap_snapshot_id']}",
+                f"上市快照：{snapshot['listing_snapshot_id'] or '—'}",
+                f"ST 批次：{snapshot['st_backfill_run_id'] or '—'}",
+            ]))
+            group_recommendations = [row for row in monitoring["recommendations"] if row["group"] == selected_group]
+            st.subheader("最新冻结推荐")
+            if group_recommendations:
+                st.caption(f"目标交易日：{group_recommendations[0]['target_date']} · 决策时点：{group_recommendations[0]['effective_as_of']} · 研究 Run：{group_recommendations[0]['run_id']}")
+                st.dataframe([{
+                    "排名": row["rank"], "代码": row["ticker"], "名称": row["security_name"],
+                    "评分": f"{row['score']:.4f}", "参考收盘": _currency(row["reference_close"]),
+                } for row in group_recommendations], hide_index=True, width="stretch")
+            else:
+                _empty("该分组已有股票池，但尚无冻结研究推荐。")
     with research_tab:
         st.subheader("基线与事件影子评估")
         st.caption("研究数据不直接创建账户订单。展开下方项目可查看新闻、公告风险与外部请求审计。")
@@ -291,6 +321,21 @@ def main() -> None:
             _empty("尚无成熟评估；在推荐后的完整 T+20 数据到齐后运行影子评估脚本。")
         with st.expander("新闻事实与事件研究", expanded=False):
             st.caption("新闻仅在归档、时间因果、来源质量和行业字典校验后，才可能进入影子事件假设；不会直接创建账户订单。")
+            health = news["health"]
+            if health["alerts"]:
+                st.warning("新闻健康告警：" + " · ".join(health["alerts"]))
+            st.caption(f"最近入库：{health['latest_received_at'] or '—'} · 个股新闻/公告：{health['stock_document_count']} 条")
+            pdf = health["cninfo_pdf"]
+            pdf_metrics = st.columns(3)
+            pdf_metrics[0].metric("PDF 提取尝试", pdf["attempted"])
+            pdf_metrics[1].metric("PDF 提取成功", pdf["succeeded"])
+            pdf_metrics[2].metric("PDF 提取失败", pdf["failed"])
+            coverage = health["coverage"]
+            if coverage:
+                st.caption(f"最近候选池：{coverage.get('candidate_ticker_count', 0)} 只 · 新闻覆盖：{coverage.get('coverage_ticker_count', 0)} 只 · CNINFO 公告：{coverage.get('cninfo_documents', 0)} 条")
+            if health["failed_sources"]:
+                st.dataframe([{"失败来源": row["source"], "最近失败": row["last_failed_at"]}
+                              for row in health["failed_sources"]], hide_index=True, width="stretch")
             if news["hypotheses"]:
                 for hypothesis in news["hypotheses"]:
                     status = "✅ 影子可用" if hypothesis["status"] == "SHADOW_ELIGIBLE" else "⛔ 已拒绝"

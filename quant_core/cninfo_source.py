@@ -1,6 +1,8 @@
 """Direct adapter for official CNINFO listed-company disclosure metadata."""
 
 from dataclasses import dataclass
+from dataclasses import replace
+from io import BytesIO
 from datetime import date, datetime, timezone
 from hashlib import sha256
 import json
@@ -9,16 +11,28 @@ from typing import Any, Optional
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from pypdf import PdfReader
+
 from .news import NewsDocument
 
 
 CNINFO_QUERY_URL = "https://www.cninfo.com.cn/new/hisAnnouncement/query"
 CNINFO_STATIC_BASE_URL = "https://static.cninfo.com.cn/"
+MAX_ANNOUNCEMENT_TEXT_CHARS = 120_000
 
 
 @dataclass(frozen=True)
 class CninfoFetch:
     documents: tuple[NewsDocument, ...]
+    request_key_sha256: str
+    artifact_path: str
+    artifact_sha256: str
+    attempts: tuple[tuple[int, int, float, Optional[str]], ...]
+
+
+@dataclass(frozen=True)
+class CninfoPdfFetch:
+    document: NewsDocument
     request_key_sha256: str
     artifact_path: str
     artifact_sha256: str
@@ -111,6 +125,42 @@ def _result(payload: dict[str, Any], received_at: datetime, request_key: str, ar
     announcements = [item for page in payload.get("pages", []) for item in page.get("announcements", [])]
     documents = tuple(_document(item, received_at, artifact_path, artifact_hash) for item in announcements)
     return CninfoFetch(documents, request_key, str(artifact_path), artifact_hash, attempts)
+
+
+def cninfo_pdf_document_cached(document: NewsDocument, cache_dir: Path) -> CninfoPdfFetch:
+    """Archive and extract the official disclosure PDF behind one CNINFO notice."""
+    if document.source_url is None or not document.source_url.startswith(CNINFO_STATIC_BASE_URL):
+        raise ValueError("CNINFO PDF extraction requires an official static.cninfo.com.cn URL")
+    request_key = sha256(document.source_url.encode("utf-8")).hexdigest()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    path = cache_dir / f"cninfo_pdf_{request_key}.pdf"
+    cache_hit = path.exists()
+    if not cache_hit:
+        try:
+            payload = _get_pdf_bytes(document.source_url)
+        except Exception as error:
+            raise RuntimeError("CNINFO PDF request failed") from error
+        path.write_bytes(payload)
+    payload = path.read_bytes()
+    if not payload.startswith(b"%PDF"):
+        raise RuntimeError("CNINFO disclosure artifact is not a PDF")
+    try:
+        text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(payload)).pages).strip()
+    except Exception as error:
+        raise RuntimeError("CNINFO PDF text extraction failed") from error
+    if not text:
+        raise RuntimeError("CNINFO PDF contains no extractable text")
+    artifact_hash = sha256(payload).hexdigest()
+    body = f"{document.headline}\n\n{text[:MAX_ANNOUNCEMENT_TEXT_CHARS]}"
+    return CninfoPdfFetch(replace(document, body=body, raw_artifact_path=str(path), raw_artifact_sha256=artifact_hash),
+                          request_key, str(path), artifact_hash,
+                          ((1, 200, 0.0, "CACHE_HIT" if cache_hit else None),))
+
+
+def _get_pdf_bytes(url: str) -> bytes:
+    request = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urlopen(request, timeout=30) as response:
+        return response.read()
 
 
 def _document(item: dict[str, Any], received_at: datetime, artifact_path: Path, artifact_hash: str) -> NewsDocument:

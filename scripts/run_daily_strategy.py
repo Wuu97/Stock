@@ -11,7 +11,7 @@ from uuid import uuid4
 from quant_core.database import writer_connection
 
 from quant_core.features import build_features
-from quant_core.event_shadow import active_event_adjustments, augment_recommendations
+from quant_core.event_shadow import active_event_adjustments, active_risk_veto_tickers, augment_recommendations
 from quant_core.market_data import MarketDataStore
 from quant_core.recommendations import store_recommendations
 from quant_core.snapshots import SnapshotService
@@ -34,6 +34,7 @@ def main() -> None:
     parser.add_argument("--event-shadow", action="store_true")
     parser.add_argument("--taxonomy-version")
     parser.add_argument("--event-weight", type=Decimal, default=Decimal("0.20"))
+    parser.add_argument("--risk-veto-hours", type=int, default=72)
     args = parser.parse_args()
 
     as_of_date = date.fromisoformat(args.as_of_date)
@@ -68,7 +69,8 @@ def main() -> None:
     shadow_run_id, shadow_status = None, None
     if args.event_shadow:
         adjustments = active_event_adjustments(connection, args.taxonomy_version, as_of_date, effective_as_of)
-        shadow_recommendations = augment_recommendations(candidates, adjustments, args.event_weight, args.top_n)
+        veto_tickers = active_risk_veto_tickers(connection, effective_as_of, args.risk_veto_hours)
+        shadow_recommendations = augment_recommendations(candidates, adjustments, args.event_weight, args.top_n, veto_tickers)
         shadow_run_id = str(uuid4())
         shadow_status = snapshots.freeze_run(shadow_run_id, target_date, "momentum_trend_event_shadow_v1",
                                              "event_shadow_v1", "cost_a_share_2026_v1", feature_id,
@@ -78,7 +80,8 @@ def main() -> None:
             store_recommendations(connection, shadow_run_id, shadow_recommendations, now)
     connection.close()
     print(json.dumps({"baseline_run_id": run_id, "baseline_status": status, "shadow_run_id": shadow_run_id,
-                      "shadow_status": shadow_status, "event_shadow_enabled": args.event_shadow}))
+                      "shadow_status": shadow_status, "event_shadow_enabled": args.event_shadow,
+                      "shadow_risk_veto_tickers": list(veto_tickers) if args.event_shadow else []}))
 
 
 if __name__ == "__main__":

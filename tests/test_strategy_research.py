@@ -55,3 +55,9 @@ def test_bulldozer_daily_proxy_keeps_only_explicit_ma5_rule_and_records_gaps():
     assert [item.ticker for item in result.recommendations] == ["600000.SH"]
     assert result.recommendations[0].reasons["source_rule"] == "连续8天沿着五日均线向上"
     assert "竞价" in result.recommendations[0].reasons["unmodeled_source_rules"]
+    assert result.recommendations[0].reasons["td_usage"] == "SHANGHAI_COMPOSITE_DAILY_AUXILIARY_LABEL_NO_UNSPECIFIED_PRECEDENCE"
+    assert result.recommendations[0].reasons["rule_applicability"]["auction_orderbook_seal_strength"] == {
+        "status": "NOT_APPLICABLE",
+        "reason_code": "REALTIME_FIVE_LEVEL_ORDER_BOOK_UNAVAILABLE",
+        "effect": "NOT_USED_FOR_SELECTION_OR_ENTRY_OR_EXIT",
+    }

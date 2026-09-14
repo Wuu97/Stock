@@ -3,6 +3,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import duckdb
+import pytest
 
 from quant_core.models import DayBar
 from quant_core.universe import DynamicUniverseRule, FixedUniverseRule, LiquidityUniverseRule, UniverseService, select_dynamic_universe, select_liquidity_universe
@@ -52,6 +53,33 @@ def test_listing_age_gate_uses_trading_days_and_fails_closed_when_missing():
         {"OLD": start, "NEW": days[10]}, days,
     )
     assert [member.ticker for member in members] == ["OLD"]
+
+
+def test_non_st_gate_excludes_flagged_and_missing_supplier_records():
+    start = date(2026, 7, 1)
+    bars = [_bar(start + timedelta(days=index), ticker, Decimal("10") + index)
+            for ticker in ("SAFE", "ST", "MISSING") for index in range(8)]
+    rule = DynamicUniverseRule("st_gate", Decimal("1"), 5, 10, require_non_st=True)
+    members = select_dynamic_universe(
+        bars, {ticker: Decimal("10") for ticker in ("SAFE", "ST", "MISSING")}, start + timedelta(days=7), rule,
+        st_flags={"SAFE": False, "ST": True},
+    )
+    assert [member.ticker for member in members] == ["SAFE"]
+
+
+def test_universe_service_fails_closed_when_non_st_evidence_is_not_supplied():
+    con = duckdb.connect(":memory:")
+    con.execute(Path("sql/schema.sql").read_text())
+    service = UniverseService(con)
+    now = datetime.now(timezone.utc)
+    service.store_market_caps("cap", now, "fixture", {"AAA": Decimal("10")}, now)
+    bars = [_bar(date(2026, 8, 1) + timedelta(days=index), "AAA", Decimal("10") + index)
+            for index in range(6)]
+    with pytest.raises(ValueError, match="st_backfill_run_id is required"):
+        service.create_snapshot(
+            "cap", date(2026, 8, 6),
+            DynamicUniverseRule("st_required", Decimal("1"), 5, 10, require_non_st=True), bars, now,
+        )
 
 
 def test_dynamic_universe_members_are_snapshotted_in_the_database():

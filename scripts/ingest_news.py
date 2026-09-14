@@ -11,7 +11,7 @@ from typing import Optional
 from quant_core.database import writer_connection
 
 from quant_core.akshare_source import cls_flash_news, stock_announcements, stock_news
-from quant_core.cninfo_source import cninfo_announcements_cached
+from quant_core.cninfo_source import cninfo_announcements_cached, cninfo_pdf_document_cached
 from quant_core.news import NewsArchive
 from quant_core.world_news_source import GdeltRequestError, gdelt_articles_cached, native_rss_articles_cached
 
@@ -47,6 +47,18 @@ def main() -> None:
             source_fetch = cninfo_announcements_cached(datetime.fromisoformat(args.date).date(), tuple(args.cninfo_ticker), now,
                                                        Path(args.cache_dir))
             documents = source_fetch.documents
+            pdf_fetches = []
+            pdf_failures = []
+            hydrated = []
+            for document in documents:
+                try:
+                    result = cninfo_pdf_document_cached(document, Path(args.cache_dir))
+                    hydrated.append(result.document)
+                    pdf_fetches.append(result)
+                except Exception as error:
+                    hydrated.append(document)
+                    pdf_failures.append((document, type(error).__name__))
+            documents = tuple(hydrated)
         else:
             if args.source == "gdelt":
                 if not args.query:
@@ -85,7 +97,19 @@ def main() -> None:
                 archive.record_request(_source_channel(args.source, args.source_channel), source_fetch.request_key_sha256, now, attempt,
                                        error_code == "CACHE_HIT", status, backoff, source_fetch.artifact_path,
                                        source_fetch.artifact_sha256, error_code)
-    print({"source": args.source, "fetched": len(documents), "stored": len(set(stored))})
+        if args.source == "cninfo":
+            for result in pdf_fetches:
+                for attempt, status, backoff, error_code in result.attempts:
+                    archive.record_request("cninfo_pdf", result.request_key_sha256, now, attempt,
+                                           error_code == "CACHE_HIT", status, backoff, result.artifact_path,
+                                           result.artifact_sha256, error_code)
+            for document, error_code in pdf_failures:
+                archive.record_request("cninfo_pdf", sha256(document.source_url.encode("utf-8")).hexdigest(), now, 1,
+                                       False, 0, 0, error_code=error_code)
+    output = {"source": args.source, "fetched": len(documents), "stored": len(set(stored))}
+    if args.source == "cninfo":
+        output["pdf"] = {"attempted": len(documents), "succeeded": len(pdf_fetches), "failed": len(pdf_failures)}
+    print(output)
 
 
 def _request_key(args) -> str:
