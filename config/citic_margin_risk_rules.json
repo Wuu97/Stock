@@ -1,0 +1,27 @@
+{
+  "rule_version": "citic_public_margin_rules_20260914",
+  "account_id": "personal_margin_citic_0601",
+  "status": "CONTRACT_ASSUMED_BY_USER",
+  "assumption_confirmed_at": "2026-09-14",
+  "source_reference": "https://pb.citics.com/trading/xxgs/wcdbbl/",
+  "checked_at": "2026-09-14",
+  "base": {
+    "liquidation_ratio": "1.30",
+    "safety_ratio": "1.40",
+    "withdrawal_ratio": "3.00"
+  },
+  "single_stock_concentration_limit": "0.30",
+  "financing_used_debt_reconciliation_tolerance": "0.00",
+  "snapshot_max_market_days": 1,
+  "chinext_star_concentration_tiers": [
+    {"max_concentration": "0.30", "liquidation_ratio": "1.30", "safety_ratio": "1.40"},
+    {"max_concentration": "0.50", "liquidation_ratio": "1.40", "safety_ratio": "1.50"},
+    {"max_concentration": "0.80", "liquidation_ratio": "1.50", "safety_ratio": "1.60"},
+    {"max_concentration": null, "liquidation_ratio": "1.60", "safety_ratio": "1.70"}
+  ],
+  "notes": [
+    "中信证券公开口径以任一交易日 16:00 的维持担保比例及双创板净持仓集中度决定阈值。",
+    "用户授权本系统将该公开口径作为账户合同要求；若中信证券客户端、书面合同或通知显示更严格数值，应立即覆盖本配置。",
+    "做 T 影子计划必须使用现有可卖仓位；当日新增买入仓位按 A 股 T+1 锁定。"
+  ]
+}

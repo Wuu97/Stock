@@ -1,0 +1,38 @@
+{
+  "exposure_version": "manual_event_exposure_v5",
+  "exposures": [
+    {
+      "ticker": "300394.SZ",
+      "taxonomy_version": "SW2021_TUSHARE_20260908",
+      "industry_code": "730204",
+      "valid_from": "2026-04-08",
+      "valid_to": null,
+      "exposure_weight": "0.90",
+      "rationale": "2025 年年度报告披露公司从事高速光器件及光引擎等通信相关业务，产品服务数据中心和高速光通信场景；通信网络设备及器件行业事件对主营业务具有较高、但非完全单一的传导关系。",
+      "source_reference": "https://static.cninfo.com.cn/finalpage/2026-04-08/1225082705.PDF",
+      "reviewed_by": "codex_primary_source_review_20260914"
+    },
+    {
+      "ticker": "300757.SZ",
+      "taxonomy_version": "SW2021_TUSHARE_20260908",
+      "industry_code": "640704",
+      "valid_from": "2026-03-31",
+      "valid_to": null,
+      "exposure_weight": "0.85",
+      "rationale": "2025 年年度报告披露公司主营智能制造与自动化装备相关业务；其他自动化设备行业事件对经营有较高传导，但公司业务还受客户结构与项目节奏影响，保留折减。",
+      "source_reference": "https://static.cninfo.com.cn/finalpage/2026-03-31/1225059372.PDF",
+      "reviewed_by": "codex_primary_source_review_20260914"
+    },
+    {
+      "ticker": "688498.SH",
+      "taxonomy_version": "SW2021_TUSHARE_20260908",
+      "industry_code": "270102",
+      "valid_from": "2026-03-25",
+      "valid_to": null,
+      "exposure_weight": "0.90",
+      "rationale": "2025 年年度报告披露公司从事半导体激光器芯片等产品研发、生产与销售；分立器件行业供需、技术与贸易事件对主营业务具有较高传导关系。",
+      "source_reference": "https://static.cninfo.com.cn/finalpage/2026-03-25/1225028582.PDF",
+      "reviewed_by": "codex_primary_source_review_20260914"
+    }
+  ]
+}

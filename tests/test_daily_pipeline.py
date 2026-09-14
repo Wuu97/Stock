@@ -1,11 +1,14 @@
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import duckdb
 import pytest
 
-from scripts.daily_pipeline import _run_news_sources, _taxonomy_version, _tracked_tickers, _universe_tickers
+from scripts.daily_pipeline import (_account_tickers, _active_simulation_tickers, _monitor_account_ids, _run_cninfo_text_enrichment, _run_news_sources,
+                                    _serializable_arguments,
+                                    _taxonomy_version, _tracked_tickers, _universe_tickers)
 from quant_core.pipeline_audit import PipelineStore
 from quant_core.cost_models import load_cost_model
 
@@ -41,10 +44,32 @@ def test_universe_tickers_are_the_candidate_news_coverage_set(tmp_path):
     assert _universe_tickers(str(db_path), "universe") == ["000001.SZ", "600000.SH"]
 
 
+def test_monitor_accounts_contribute_held_and_pending_tickers(tmp_path):
+    db_path = tmp_path / "monitor.duckdb"
+    connection = duckdb.connect(str(db_path)); connection.execute(Path("sql/schema.sql").read_text())
+    now = datetime.now(timezone.utc)
+    for account_id in ("cash", "margin"):
+        connection.execute("INSERT INTO sim_accounts VALUES (?, ?, 'CNY', 10000, 'cash', 'fifo', 'ACTIVE', ?)", [account_id, account_id, now])
+    connection.execute("INSERT INTO sim_position_lots VALUES ('lot', 'cash', '600000.SH', 'buy', ?, ?, 100, 10, ?)", [date(2026, 9, 1), date(2026, 9, 2), now])
+    connection.execute("INSERT INTO sim_order_intents VALUES ('pending', NULL, 'margin', '000001.SZ', ?, 'BUY', 100, 'NEXT_OPEN', 'PENDING', NULL, ?)", [date(2026, 9, 2), now])
+    connection.close()
+    config = tmp_path / "accounts.json"
+    config.write_text('{"accounts":[{"account_id":"cash","enabled":true},{"account_id":"margin","enabled":true},{"account_id":"off","enabled":false}]}')
+    account_ids = _monitor_account_ids(config)
+    assert account_ids == ["cash", "margin"]
+    assert _account_tickers(str(db_path), account_ids) == ["000001.SZ", "600000.SH"]
+    assert _active_simulation_tickers(str(db_path)) == ["000001.SZ", "600000.SH"]
+
+
 def test_cost_model_loader_uses_the_versioned_project_config():
     fee = load_cost_model("cost_a_share_2026_v1", Path("config/cost_models.yaml"))
     assert fee.version == "cost_a_share_2026_v1"
     assert fee.commission_rate == Decimal("0.00025")
+
+
+def test_pipeline_arguments_preserve_decimal_values_as_auditable_strings():
+    arguments = SimpleNamespace(cash_reserve=Decimal("0.05"), max_positions=5)
+    assert _serializable_arguments(arguments) == {"cash_reserve": "0.05", "max_positions": 5}
 
 
 def test_news_sources_are_isolated_when_one_source_fails(monkeypatch):
@@ -55,11 +80,29 @@ def test_news_sources_are_isolated_when_one_source_fails(monkeypatch):
             raise RuntimeError("429")
         return {"stored": 1}
     monkeypatch.setattr("scripts.daily_pipeline._run", fake_run)
-    results = _run_news_sources("db", date(2026, 9, 10), ["600000.SH"], ["official=https://example.test/feed"], ["geopolitics"])
+    results = _run_news_sources("db", date(2026, 9, 10), ["600000.SH"], ["official=https://example.test/feed"], ["geopolitics"],
+                                stock_news_tickers=["000001.SZ"])
     assert results["cls"]["status"] == "SUCCEEDED"
     assert results["cninfo"]["status"] == "SUCCEEDED"
+    assert results["stock:000001.SZ"]["status"] == "SUCCEEDED"
     assert results["rss:official"]["status"] == "SUCCEEDED"
     assert results["gdelt:geopolitics"] == {"status": "FAILED", "reason": "429"}
+
+
+def test_cninfo_text_enrichment_isolated_and_runs_ocr_after_pdf_extraction(monkeypatch):
+    calls = []
+
+    def fake_run(script, arguments):
+        calls.append((script, arguments))
+        if script == "backfill_cninfo_text.py":
+            raise RuntimeError("PDF source unavailable")
+        return {"attempted": 1, "success": 1}
+
+    monkeypatch.setattr("scripts.daily_pipeline._run", fake_run)
+    result = _run_cninfo_text_enrichment("db", ["600000.SH"], "cache", 7, 3)
+    assert result["pdf_text"] == {"status": "FAILED", "reason": "PDF source unavailable"}
+    assert result["ocr"] == {"status": "SUCCEEDED", "result": {"attempted": 1, "success": 1}}
+    assert calls[1] == ("ocr_cninfo_text.py", ["--db", "db", "--cache-dir", "cache", "--max-documents", "3"])
 
 
 def test_pipeline_audit_reuses_successful_stage_and_records_non_blocking_failure(tmp_path):

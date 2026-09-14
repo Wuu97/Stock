@@ -1,0 +1,13 @@
+{
+  "version": "daily_pipeline_arguments_v1",
+  "arguments": [
+    "--db", "data/top50/quant.duckdb",
+    "--account-id", "top50_forward_account",
+    "--taxonomy-version", "SW2021_TUSHARE_20260908",
+    "--news-source-config", "config/news_sources.json",
+    "--gdelt-query", "geopolitics",
+    "--gdelt-query", "export control",
+    "--gdelt-query", "natural disaster",
+    "--gdelt-query", "monetary policy"
+  ]
+}

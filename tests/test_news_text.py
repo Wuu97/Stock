@@ -27,3 +27,15 @@ def test_risk_assessment_prefers_the_latest_successful_pdf_text():
     row = _eligible_documents(connection, ('600000.SH',), now, 72)[0]
     assert row[3] == 'full official disclosure'
     assert row[4] == 'EXTRACTED_PDF'
+
+
+def test_risk_veto_excludes_financial_media_even_when_ticker_is_mentioned():
+    connection = duckdb.connect(":memory:")
+    connection.execute(Path("sql/schema.sql").read_text())
+    now = datetime(2026, 9, 14, tzinfo=timezone.utc)
+    connection.execute(
+        "INSERT INTO news_documents (document_id, source_channel, scope, ticker, published_at, received_at, headline, body, "
+        "content_sha256, source_type, evidence_role, created_at) VALUES "
+        "('media', 'akshare_stock_news_em', 'STOCK', '600000.SH', ?, ?, '个股涨停', '正文提及 600000', 'media-hash', "
+        "'FINANCIAL_MEDIA', 'EVIDENCE_ELIGIBLE', ?)", [now, now, now])
+    assert _eligible_documents(connection, ('600000.SH',), now, 72) == []

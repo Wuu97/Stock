@@ -23,6 +23,9 @@ from quant_core.matching import OpenGapPolicy
 from quant_core.pipeline_audit import PipelineStore
 from quant_core.portfolio import PortfolioPolicy
 from quant_core.news_sources import load_official_rss_sources
+from quant_core.features import build_features
+from quant_core.market_data import MarketDataStore
+from quant_core.strategy import BaselineConfig, rank_baseline
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -89,6 +92,38 @@ def _tracked_tickers(connection, account_id: str) -> list[str]:
     return sorted(row[0] for row in rows)
 
 
+def _monitor_account_ids(path: Path) -> list[str]:
+    """Return explicitly enabled, read-only portfolio-monitor accounts."""
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    accounts = payload.get("accounts", [])
+    if not isinstance(accounts, list):
+        raise ValueError("portfolio monitor config requires accounts")
+    return sorted({item["account_id"] for item in accounts
+                   if isinstance(item, dict) and item.get("enabled") is True and isinstance(item.get("account_id"), str)})
+
+
+def _account_tickers(db_path: str, account_ids: list[str]) -> list[str]:
+    if not account_ids:
+        return []
+    with read_connection(db_path) as connection:
+        rows = []
+        for account_id in account_ids:
+            rows.extend(_tracked_tickers(connection, account_id))
+    return sorted(set(rows))
+
+
+def _active_simulation_tickers(db_path: str) -> list[str]:
+    """Return every active paper-account symbol that must have an official close."""
+    with read_connection(db_path) as connection:
+        rows = connection.execute(
+            "SELECT DISTINCT l.ticker FROM sim_position_lots l JOIN sim_accounts a ON a.account_id = l.account_id "
+            "WHERE a.account_status = 'ACTIVE' "
+            "UNION SELECT DISTINCT o.ticker FROM sim_order_intents o JOIN sim_accounts a ON a.account_id = o.account_id "
+            "WHERE a.account_status = 'ACTIVE' AND o.order_status = 'PENDING'"
+        ).fetchall()
+    return sorted(row[0] for row in rows)
+
+
 def _taxonomy_version(connection, configured: Optional[str]) -> str:
     if configured:
         return configured
@@ -111,6 +146,11 @@ def _context(db_path: str, account_id: str, configured_taxonomy: Optional[str]) 
                 "tracked_tickers": _tracked_tickers(connection, account_id)}
 
 
+def _serializable_arguments(arguments: argparse.Namespace) -> dict:
+    """Freeze CLI values in the audit record without losing Decimal precision."""
+    return {key: str(value) if isinstance(value, Decimal) else value for key, value in vars(arguments).items()}
+
+
 def _universe_tickers(db_path: str, universe_snapshot_id: str) -> list[str]:
     """Use the frozen candidate universe as the pre-selection news coverage set."""
     with read_connection(db_path) as connection:
@@ -121,8 +161,22 @@ def _universe_tickers(db_path: str, universe_snapshot_id: str) -> list[str]:
     return [row[0] for row in rows]
 
 
+def _preselect_news_tickers(db_path: str, market_snapshot_id: str, as_of_date: date,
+                            universe_snapshot_id: str, top_n: int) -> list[str]:
+    """Rank a read-only preliminary list; it is neither a recommendation nor a frozen run."""
+    with read_connection(db_path) as connection:
+        bars = MarketDataStore(connection).load_bars_many([market_snapshot_id])
+        features = build_features(bars, as_of_date, 20)
+        allowed = {row[0] for row in connection.execute(
+            "SELECT ticker FROM universe_members WHERE universe_snapshot_id = ?", [universe_snapshot_id]
+        ).fetchall()}
+    ranked = rank_baseline([item for item in features if item.ticker in allowed],
+                           BaselineConfig("momentum_trend_v1", 1.5, top_n))
+    return [item.ticker for item in ranked[:top_n]]
+
+
 def _run_news_sources(db_path: str, trade_date: date, tracked_tickers: list[str], rss_feeds: list[str],
-                      gdelt_queries: list[str]) -> dict:
+                      gdelt_queries: list[str], stock_news_tickers: Optional[list[str]] = None) -> dict:
     """Run each source independently so a rate-limited discovery feed cannot hide other evidence."""
     sources: list[tuple[str, list[str]]] = [("cls", ["--db", db_path, "--source", "cls"])]
     if tracked_tickers:
@@ -130,6 +184,11 @@ def _run_news_sources(db_path: str, trade_date: date, tracked_tickers: list[str]
         for ticker in tracked_tickers:
             arguments.extend(("--cninfo-ticker", ticker))
         sources.append(("cninfo", arguments))
+    # This is attributed financial reporting (Eastmoney through the existing
+    # adapter), not a regulatory filing.  Restrict it to held/pending names so
+    # one daily run cannot fan out across the entire candidate universe.
+    for ticker in sorted(set(stock_news_tickers or [])):
+        sources.append((f"stock:{ticker}", ["--db", db_path, "--source", "stock", "--ticker", ticker]))
     for channel_url in rss_feeds:
         channel, separator, url = channel_url.partition("=")
         if not separator or not channel or not url:
@@ -146,6 +205,29 @@ def _run_news_sources(db_path: str, trade_date: date, tracked_tickers: list[str]
         except Exception as error:
             outcomes[name] = {"status": "FAILED", "reason": str(error)}
     return outcomes
+
+
+def _run_cninfo_text_enrichment(db_path: str, tickers: list[str], cache_dir: str,
+                                latest_days: int, ocr_max_documents: int) -> dict:
+    """Append PDF/OCR text facts independently; failures never block the production baseline."""
+    if not tickers:
+        return {"pdf_text": {"status": "SKIPPED_NO_COVERAGE_TICKERS"},
+                "ocr": {"status": "SKIPPED_NO_COVERAGE_TICKERS"}}
+    text_args = ["--db", db_path, "--latest-days", str(latest_days), "--cache-dir", cache_dir]
+    for ticker in tickers:
+        text_args.extend(("--ticker", ticker))
+    results = {}
+    try:
+        results["pdf_text"] = {"status": "SUCCEEDED", "result": _run("backfill_cninfo_text.py", text_args)}
+    except Exception as error:
+        results["pdf_text"] = {"status": "FAILED", "reason": str(error)}
+    try:
+        results["ocr"] = {"status": "SUCCEEDED", "result": _run("ocr_cninfo_text.py", [
+            "--db", db_path, "--cache-dir", cache_dir, "--max-documents", str(ocr_max_documents),
+        ])}
+    except Exception as error:
+        results["ocr"] = {"status": "FAILED", "reason": str(error)}
+    return results
 
 
 def main() -> None:
@@ -168,9 +250,16 @@ def main() -> None:
     parser.add_argument("--news-source-config", default="config/news_sources.json",
                         help="Versioned official RSS source registry")
     parser.add_argument("--gdelt-query", action="append", default=[])
+    parser.add_argument("--news-cache-dir", default="data/top50/news_cache")
+    parser.add_argument("--cninfo-text-lookback-days", type=int, default=7)
+    parser.add_argument("--cninfo-ocr-max-documents", type=int, default=20)
+    parser.add_argument("--stock-news-preselect-n", type=int, default=20)
+    parser.add_argument("--portfolio-monitor-config", default="config/portfolio_monitor_accounts.json")
     parser.add_argument("--skip-monitoring-research", action="store_true",
                         help="Skip the separate full-market monitoring-group research branch.")
     args = parser.parse_args()
+    if args.cninfo_text_lookback_days <= 0 or args.cninfo_ocr_max_documents <= 0 or args.stock_news_preselect_n <= 0:
+        raise ValueError("CNINFO text/OCR limits must be positive")
 
     trade_date, next_date = _trade_dates(date.fromisoformat(args.trade_date))
     now = datetime.now(SHANGHAI)
@@ -178,7 +267,7 @@ def main() -> None:
     fee = load_cost_model(args.cost_model_version, ROOT / args.cost_model_config)
     policy = PortfolioPolicy.equal_weight(args.max_positions, args.cash_reserve)
     open_gap_policy = OpenGapPolicy(args.max_open_gap_up, args.max_open_gap_down)
-    run_config = {"arguments": vars(args), "cost_model": {"version": fee.version, "commission_rate": str(fee.commission_rate),
+    run_config = {"arguments": _serializable_arguments(args), "cost_model": {"version": fee.version, "commission_rate": str(fee.commission_rate),
                   "min_commission": str(fee.min_commission), "stamp_duty_rate": str(fee.stamp_duty_rate),
                   "transfer_fee_rate": str(fee.transfer_fee_rate), "slippage_rate": str(fee.slippage_rate)},
                   "cost_model_config_sha256": sha256((ROOT / args.cost_model_config).read_bytes()).hexdigest()}
@@ -189,17 +278,22 @@ def main() -> None:
         return
     context = audit.run_stage(run_id, "context", "BLOCKING", lambda: _context(args.db, args.account_id, args.taxonomy_version))
     taxonomy_version, tracked_tickers = context["taxonomy_version"], context["tracked_tickers"]
+    monitor_account_ids = _monitor_account_ids(ROOT / args.portfolio_monitor_config)
+    monitored_tickers = _account_tickers(args.db, monitor_account_ids)
+    active_simulation_tickers = _active_simulation_tickers(args.db)
 
     refresh_args = ["--db", args.db, "--trade-date", trade_date.isoformat(), "--group-name", args.group_name]
-    for ticker in tracked_tickers:
+    for ticker in sorted(set([*tracked_tickers, *active_simulation_tickers])):
         refresh_args.extend(("--include-ticker", ticker))
     refresh = audit.run_stage(run_id, "refresh_universe", "BLOCKING", lambda: _run("refresh_daily_dynamic_universe.py", refresh_args))
     candidate_tickers = _universe_tickers(args.db, refresh["universe_snapshot_id"])
-    news_tickers = sorted(set([*tracked_tickers, *candidate_tickers]))
+    news_tickers = sorted(set([*tracked_tickers, *monitored_tickers, *candidate_tickers]))
     raw_snapshot = refresh["market_snapshot_id"]
     enriched_snapshot = f"{raw_snapshot}_limits"
     audit.run_stage(run_id, "enrich_limits", "BLOCKING", lambda: _run("enrich_snapshot_with_tushare_limits.py", ["--db", args.db, "--base-snapshot-id", raw_snapshot,
          "--snapshot-id", enriched_snapshot, "--exempt-ticker", "000300.SH"]))
+    actual_valuations = audit.run_stage(run_id, "actual_account_valuations", "NON_BLOCKING", lambda: _run(
+        "refresh_external_account_valuations.py", ["--db", args.db, "--trade-date", trade_date.isoformat()]))
 
     def settle_stage():
         with writer_connection(args.db, transaction=False) as connection:
@@ -213,12 +307,23 @@ def main() -> None:
     configured_rss_feeds = [f"{source.channel}={source.feed_url}" for source in official_rss_sources]
     rss_feeds = list(dict.fromkeys([*configured_rss_feeds, *args.rss_feed]))
     official_domains = [source.official_domain for source in official_rss_sources]
+    def news_preselection_stage():
+        return {"mode": "READ_ONLY_PRESELECTION", "tickers": _preselect_news_tickers(
+            args.db, enriched_snapshot, trade_date, refresh["universe_snapshot_id"], args.stock_news_preselect_n)}
+    news_preselection = audit.run_stage(run_id, "news_preselection", "NON_BLOCKING", news_preselection_stage)
     def news_stage():
-        sources = _run_news_sources(args.db, trade_date, news_tickers, rss_feeds, args.gdelt_query)
+        preselected = news_preselection.get("tickers", []) if isinstance(news_preselection, dict) else []
+        financial_news_tickers = sorted(set([*monitored_tickers, *tracked_tickers, *preselected]))
+        sources = _run_news_sources(args.db, trade_date, news_tickers, rss_feeds, args.gdelt_query,
+                                    stock_news_tickers=financial_news_tickers)
+        enrichment = _run_cninfo_text_enrichment(args.db, news_tickers, args.news_cache_dir,
+                                                  args.cninfo_text_lookback_days, args.cninfo_ocr_max_documents)
         cninfo = sources.get("cninfo", {}).get("result", {})
         return {"sources": sources, "coverage": {"candidate_ticker_count": len(candidate_tickers),
                 "coverage_ticker_count": len(news_tickers), "cninfo_documents": cninfo.get("fetched", 0),
-                "cninfo_pdf": cninfo.get("pdf", {})}}
+                "cninfo_pdf": cninfo.get("pdf", {})}, "monitored_tickers": monitored_tickers,
+                "financial_news_tickers": financial_news_tickers,
+                "text_enrichment": enrichment}
     news = audit.run_stage(run_id, "news", "NON_BLOCKING", news_stage)
     def news_health_stage():
         with read_connection(args.db) as connection:
@@ -263,8 +368,9 @@ def main() -> None:
          "--account-id", args.account_id, "--output", str(report_path)]))
     payload = {"trade_date": trade_date.isoformat(), "next_trade_date": next_date.isoformat(),
                "pipeline_run_id": run_id, "effective_as_of": effective_as_of.isoformat(), "market_snapshot_id": enriched_snapshot,
-               "universe_snapshot_id": refresh["universe_snapshot_id"], "settlement": settlement, "exit_signals": exits,
-               "news": news, "news_candidate_ticker_count": len(candidate_tickers), "news_coverage_ticker_count": len(news_tickers),
+               "universe_snapshot_id": refresh["universe_snapshot_id"], "actual_account_valuations": actual_valuations,
+               "settlement": settlement, "exit_signals": exits,
+               "news": news, "news_preselection": news_preselection, "news_candidate_ticker_count": len(candidate_tickers), "news_coverage_ticker_count": len(news_tickers),
                "news_health": news_health, "risk_veto_shadow": risk_veto_shadow, "macro": macro, "strategy": strategy,
                "monitoring_research": monitoring_research, "ml_shadow": ml_shadow, "evaluation": evaluation,
                "report_path": str(report_path)}

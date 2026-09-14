@@ -19,7 +19,7 @@ from quant_core.database import read_connection, writer_connection
 from quant_core.environment import load_env_file
 from quant_core.market_data import MarketDataStore
 from quant_core.models import DayBar
-from quant_core.snapshots import SnapshotService, write_manifest
+from quant_core.snapshots import SnapshotService, daily_market_close_timestamp, write_manifest
 from quant_core.tushare_source import create_tushare_client
 from quant_core.universe import UniverseService
 
@@ -74,9 +74,10 @@ def _snapshot_full_market(db_path: str, trade_date: date, artifact_dir: Path) ->
     manifest_path = artifact_dir / f"{snapshot_id}.manifest.json"
     manifest_hash = write_manifest(manifest_path, {str(raw_path): sha256(raw_path.read_bytes()).hexdigest()})
     now = datetime.now(timezone.utc)
+    published_at = daily_market_close_timestamp(trade_date)
     with writer_connection(db_path) as connection:
         SnapshotService(connection).register_market_snapshot(snapshot_id, trade_date, "tushare_monitoring_research_daily",
-                                                              now, now, str(manifest_path), manifest_hash, now)
+                                                              published_at, now, str(manifest_path), manifest_hash, now)
         MarketDataStore(connection).store_bars(snapshot_id, bars)
         UniverseService(connection).store_market_caps(cap_id, now, "tushare_monitoring_research_daily_basic", caps, now)
     return snapshot_id, cap_id

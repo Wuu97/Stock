@@ -14,7 +14,7 @@ from quant_core.database import read_connection, writer_connection
 from quant_core.environment import load_env_file
 from quant_core.market_data import MarketDataStore
 from quant_core.models import DayBar
-from quant_core.snapshots import SnapshotService, write_manifest
+from quant_core.snapshots import SnapshotService, daily_market_close_timestamp, write_manifest
 from quant_core.universe import DynamicUniverseRule, UniverseService
 
 
@@ -114,9 +114,11 @@ def main() -> None:
     manifest_hash = write_manifest(manifest, {str(raw_path): sha256(raw_path.read_bytes()).hexdigest()}, previous_hash)
     snapshot_id, cap_id = f"tushare_pool_{trade_date:%Y%m%d}", f"tushare_cap_{trade_date:%Y%m%d}"
     now = datetime.now(timezone.utc)
+    published_at = daily_market_close_timestamp(trade_date)
     with writer_connection(args.db) as connection:
         snapshots, universes = SnapshotService(connection), UniverseService(connection)
-        snapshots.register_market_snapshot(snapshot_id, trade_date, "tushare_daily", now, now, str(manifest), manifest_hash, now)
+        snapshots.register_market_snapshot(snapshot_id, trade_date, "tushare_daily", published_at, now,
+                                           str(manifest), manifest_hash, now)
         MarketDataStore(connection).store_bars(snapshot_id, rolling_bars)
         universes.store_market_caps(cap_id, now, "tushare_daily_basic", caps, now)
         universe_id = universes.create_snapshot(cap_id, trade_date, DynamicUniverseRule(

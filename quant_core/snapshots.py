@@ -10,6 +10,17 @@ from zoneinfo import ZoneInfo
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 CALL_AUCTION_START = time(9, 15)
+DAILY_MARKET_CLOSE = time(15, 0)
+
+
+def daily_market_close_timestamp(trade_date: date) -> datetime:
+    """Return the exchange close that makes a daily market fact available.
+
+    ``received_at`` remains the physical retrieval time.  Daily OHLCV facts must
+    retain their market-session publication time so a post-close recommendation
+    is not incorrectly rejected merely because Tushare was queried afterwards.
+    """
+    return datetime.combine(trade_date, DAILY_MARKET_CLOSE, tzinfo=SHANGHAI)
 
 
 def canonical_hash(payload: Mapping) -> str:

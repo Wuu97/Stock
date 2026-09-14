@@ -1,0 +1,8 @@
+{
+  "version": "news_priority_terms_v1",
+  "neutral_score": 7,
+  "positive_terms": ["业绩预增", "预增", "上调", "增持", "回购", "中标", "签约", "突破", "获批", "分红", "超预期"],
+  "negative_terms": ["业绩预亏", "预亏", "下调", "减持", "立案", "调查", "处罚", "违约", "亏损", "终止", "风险提示", "减值"],
+  "recency_hours": {"fresh": 24, "recent": 72},
+  "score_bounds": {"min": 0, "max": 15}
+}

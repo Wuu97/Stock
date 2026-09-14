@@ -56,8 +56,14 @@ def main() -> None:
         manifest_hash = write_manifest(manifest_path, {str(raw_path): raw_hash})
         now = datetime.now(timezone.utc)
         trade_date = max(bar.trade_date for bar in enriched)
+        base_snapshot = connection.execute(
+            "SELECT source_published_at FROM market_data_snapshots WHERE market_snapshot_id = ?",
+            [args.base_snapshot_id],
+        ).fetchone()
+        if base_snapshot is None:
+            raise ValueError("base market snapshot metadata is missing")
         SnapshotService(connection).register_market_snapshot(
-            args.snapshot_id, trade_date, "tushare_stk_limit_enriched", now, now,
+            args.snapshot_id, trade_date, "tushare_stk_limit_enriched", base_snapshot[0], now,
             str(manifest_path), manifest_hash, now,
         )
         MarketDataStore(connection).store_bars(args.snapshot_id, enriched)

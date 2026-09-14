@@ -48,6 +48,30 @@ CREATE TABLE IF NOT EXISTS sim_margin_interest_events (
     UNIQUE (debt_id, accrual_date)
 );
 
+-- User-supplied broker snapshots are append-only and never rewrite simulated lots.
+CREATE TABLE IF NOT EXISTS external_account_snapshots (
+    snapshot_id VARCHAR PRIMARY KEY,
+    account_id VARCHAR NOT NULL REFERENCES sim_accounts(account_id),
+    observed_at TIMESTAMPTZ NOT NULL,
+    collateral_assets DECIMAL(20,4), debt_balance DECIMAL(20,4),
+    financing_limit DECIMAL(20,4), financing_used DECIMAL(20,4), accrued_financing_interest DECIMAL(20,4),
+    available_cash DECIMAL(20,4), available_margin DECIMAL(20,4),
+    maintenance_ratio DECIMAL(20,8), chinext_star_concentration DECIMAL(20,8),
+    source_reference VARCHAR NOT NULL, created_at TIMESTAMPTZ NOT NULL
+);
+CREATE TABLE IF NOT EXISTS external_account_snapshot_holdings (
+    snapshot_id VARCHAR NOT NULL REFERENCES external_account_snapshots(snapshot_id),
+    ticker VARCHAR NOT NULL, shares BIGINT NOT NULL, sellable_shares BIGINT NOT NULL,
+    unit_cost DECIMAL(20,4) NOT NULL, market_price DECIMAL(20,4) NOT NULL,
+    PRIMARY KEY (snapshot_id, ticker)
+);
+CREATE TABLE IF NOT EXISTS external_account_daily_valuations (
+    snapshot_id VARCHAR NOT NULL REFERENCES external_account_snapshots(snapshot_id), trade_date DATE NOT NULL,
+    ticker VARCHAR NOT NULL, close DECIMAL(20,4) NOT NULL, market_value DECIMAL(20,4) NOT NULL,
+    unrealized_pnl DECIMAL(20,4) NOT NULL, unrealized_return DECIMAL(20,8) NOT NULL,
+    PRIMARY KEY (snapshot_id, trade_date, ticker)
+);
+
 CREATE TABLE IF NOT EXISTS local_refresh_runs (
     run_id VARCHAR PRIMARY KEY,
     trade_date DATE NOT NULL,

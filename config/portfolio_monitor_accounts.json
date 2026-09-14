@@ -1,0 +1,10 @@
+{
+  "version": "portfolio_monitor_accounts_v1",
+  "accounts": [
+    {"account_id": "personal_cash_account_0601", "role": "CASH", "enabled": true},
+    {"account_id": "personal_cash_zhongtai_1242", "role": "CASH", "enabled": true},
+    {"account_id": "personal_margin_citic_0601", "role": "MARGIN", "enabled": true,
+     "risk_rules": "config/citic_margin_risk_rules.json"}
+  ],
+  "execution_policy": "DECISION_SUPPORT_ONLY_NO_BROKER_CONNECTION"
+}

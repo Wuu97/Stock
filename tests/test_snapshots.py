@@ -3,7 +3,7 @@ from pathlib import Path
 
 import duckdb
 
-from quant_core.snapshots import SnapshotService, canonical_hash, write_manifest
+from quant_core.snapshots import SnapshotService, canonical_hash, daily_market_close_timestamp, write_manifest
 
 
 def _service(tmp_path):
@@ -24,6 +24,11 @@ def test_manifest_hash_is_stable_and_records_sorted_artifacts(tmp_path):
     first = write_manifest(tmp_path / "one.json", {"b": "2", "a": "1"})
     second = write_manifest(tmp_path / "two.json", {"a": "1", "b": "2"})
     assert first == second == canonical_hash({"artifacts": {"a": "1", "b": "2"}, "previous_hash": ""})
+
+
+def test_daily_market_fact_uses_exchange_close_not_retrieval_time():
+    published = daily_market_close_timestamp(date(2026, 9, 14))
+    assert published.isoformat() == "2026-09-14T15:00:00+08:00"
 
 
 def test_freeze_run_blocks_data_not_ready_and_late_decision(tmp_path):

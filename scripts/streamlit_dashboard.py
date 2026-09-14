@@ -159,9 +159,13 @@ def main() -> None:
         return
 
     summary, nav = data["summary"], data["nav"]
-    latest_date = nav[-1]["date"] if nav else "尚无净值记录"
+    nav_date = data["account_nav_as_of_date"] or "尚无净值记录"
+    market_date = data["market_data_as_of_date"] or "尚无行情记录"
     st.title(data["account"]["name"])
-    st.caption(f"日频模拟账户 · 收盘数据截至 {latest_date} · 非盘中实时行情")
+    if data["is_historical_account"]:
+        st.caption(f"历史回测账户 · 估值与持仓价格严格截于 {nav_date}，不读取之后的市场行情。")
+    else:
+        st.caption(f"日频模拟账户 · 最新归档行情 {market_date} · 最近已结算净值 {nav_date} · 非盘中实时行情")
     metrics = st.columns(4)
     metrics[0].metric("总资产", _currency(summary["equity"]))
     metrics[1].metric("可用现金", _currency(summary["cash"]))
@@ -181,6 +185,71 @@ def main() -> None:
                        + _percent(margin["maintenance_ratio"]) + " · 累计融资利息 "
                        + _currency(margin["accrued_interest"]))
     st.caption("较前一日 " + _currency(_nav_delta(nav)) + " · 最大回撤 " + _percent(summary["max_drawdown"]))
+    personal_account = data["is_personal_account"]
+    st.subheader("持仓与补仓风控闭环" if personal_account else "Top50 模拟账户概览")
+    risk = data["account_risk"]
+    if not personal_account:
+        st.info("Top50 是独立的动态分组模拟账户；不使用个人券商截图、融资额度或补仓闭环。请在“研究分组”查看其冻结成分与策略研究。")
+    elif risk is None:
+        st.error("未导入完整的三截图账户快照：禁止显示或执行补仓上限。")
+    else:
+        st.caption("账户快照：" + risk["observed_at"] + " · 担保资产 " + _currency(risk["collateral_assets"])
+                   + " · 负债 " + _currency(risk["debt_balance"]) + " · 可用现金 " + _currency(risk["available_cash"])
+                   + " · 可用保证金 " + _currency(risk["available_margin"]) + " · 融资剩余额度 "
+                   + _currency(max(0, risk["financing_limit"] - risk["financing_used"])))
+        st.caption("已确认应计融资利息 " + _currency(risk["accrued_financing_interest"]) + " · 对账差额 "
+                   + _currency(risk["debt_reconciliation_difference"]))
+        st.caption("单票集中度上限 " + _percent(risk["single_stock_limit"]) + " · 压力测试安全线 " + _percent(risk["safety_ratio"])
+                   + " · 当日新增买入按 A 股 T+1 锁定。")
+        if risk["block_reasons"]:
+            st.error("账户级禁止原因：" + "；".join(risk["block_reasons"]))
+        else:
+            st.caption("负债/融资已用已对账；组合补仓共用现金与可用保证金预算。")
+    if personal_account:
+        st.dataframe([{"代码": row["ticker"], "名称": row["security_name"], "总持仓": row["shares"],
+                       "当日可卖": row["sellable_shares"], "T+1 锁定": row["locked_shares"],
+                       "成本": _currency(row["cost"]), "最新价": _currency(row["last_close"]),
+                       "最终可观察补仓上限(股)": row["final_add_shares"],
+                       "补100股后成本": _currency(row["post_add_cost"]), "卖出盈亏平衡": _currency(row["sell_break_even"]),
+                       "技术评分": "—" if row["priority_score"] is None else f"{row['priority_score']} / 100",
+                       "补仓方案": row["plan_action"], "方案依据": row["plan_reason"],
+                       "禁止原因": "；".join(row["prohibition_reasons"]) or "—",
+                       "决策标签": row["label"], "浮盈亏": _percent(row["unrealized_return"])} for row in data["positions"]],
+                     hide_index=True, width="stretch")
+    stress_rows = [
+        {"代码": row["ticker"], "冲击": _percent(case["shock"]), "压力后担保比例": _percent(case["maintenance_ratio"]),
+         "安全线": _percent(case["required_ratio"]), "结果": "通过" if case["maintenance_ratio"] is None or case["maintenance_ratio"] >= case["required_ratio"] else "禁止"}
+        for row in data["positions"] for case in row.get("stress_tests", [])
+    ]
+    if personal_account and stress_rows:
+        st.caption("最终上限对应的 −3% / −5% / −10% 担保比例压力测试")
+        st.dataframe(stress_rows, hide_index=True, width="stretch")
+    if personal_account and risk is not None and not risk["block_reasons"]:
+        eligible = [row for row in data["positions"] if row["plan_action"] == "优先补仓"]
+        st.subheader("补仓执行队列（人工确认，不下单）")
+        if eligible:
+            eligible = sorted(eligible, key=lambda row: (row["priority_score"] is None, -(row["priority_score"] or 0), row["ticker"]))
+            st.caption("默认按日线技术/新闻评分排序：MACD 30% · 量价 25% · KDJ 15% · 九转 15% · 新闻正负面及 72 小时时效 15%。评分仅用于排序，仍需人工复核。")
+            queue = st.data_editor(
+                [{"纳入本次": False, "优先级": index + 1, "评分": row["priority_score"], "评分依据": row["priority_basis"], "新闻依据": row["news_basis"],
+                  "数据日期": row["technical_as_of"], "代码": row["ticker"], "名称": row["security_name"],
+                  "最终上限(股)": row["final_add_shares"], "预计金额": row["last_close"] * row["final_add_shares"] * 1.00025}
+                 for index, row in enumerate(eligible)],
+                column_config={"纳入本次": st.column_config.CheckboxColumn(required=True),
+                               "优先级": st.column_config.NumberColumn(min_value=1, step=1, required=True),
+                               "评分": st.column_config.NumberColumn(format="%d / 100"), "预计金额": st.column_config.NumberColumn(format="¥%.2f")},
+                disabled=["评分", "评分依据", "新闻依据", "数据日期", "代码", "名称", "最终上限(股)", "预计金额"], hide_index=True, width="stretch", key="add_position_queue")
+            selected = sorted((row for row in queue if row["纳入本次"]), key=lambda row: row["优先级"])
+            selected_cost = sum(row["预计金额"] for row in selected)
+            shared_budget = risk["available_cash"] + risk["available_margin"]
+            st.caption("已选 " + str(len(selected)) + " 项 · 预计占用 " + _currency(selected_cost)
+                       + " · 共享预算余额 " + _currency(shared_budget - selected_cost))
+            if selected_cost > shared_budget:
+                st.error("所选队列超出共享预算；不应执行。")
+            elif selected:
+                st.success("队列通过共享预算检查；请在券商端逐笔人工复核价格、额度和可交易状态。")
+        else:
+            _empty("当前没有同时通过账户硬风控与技术评分阈值（≥70）的补仓候选。")
     pending_exits = data["pending_exits"]
     rejected_count = sum(item["count"] for item in activity["reject_reasons"])
     state_left, state_right = st.columns((2, 1))
@@ -330,6 +399,15 @@ def main() -> None:
             pdf_metrics[0].metric("PDF 提取尝试", pdf["attempted"])
             pdf_metrics[1].metric("PDF 提取成功", pdf["succeeded"])
             pdf_metrics[2].metric("PDF 提取失败", pdf["failed"])
+            ocr = health["cninfo_ocr"]
+            ocr_metrics = st.columns(3)
+            ocr_metrics[0].metric("OCR 待处理", ocr["pending"])
+            ocr_metrics[1].metric("OCR 成功", ocr["succeeded"])
+            ocr_metrics[2].metric("OCR 成功率", "—" if ocr["success_rate"] is None else _percent(ocr["success_rate"]))
+            if ocr["failure_reasons"]:
+                st.caption("OCR 最新失败原因：" + " · ".join(
+                    f"{row['error']} ({row['count']})" for row in ocr["failure_reasons"]
+                ))
             coverage = health["coverage"]
             if coverage:
                 st.caption(f"最近候选池：{coverage.get('candidate_ticker_count', 0)} 只 · 新闻覆盖：{coverage.get('coverage_ticker_count', 0)} 只 · CNINFO 公告：{coverage.get('cninfo_documents', 0)} 条")

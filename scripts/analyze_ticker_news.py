@@ -64,7 +64,12 @@ def _eligible_documents(connection, tickers: tuple[str, ...], effective_as_of: d
         f"SELECT n.document_id, n.ticker, n.headline, COALESCE(x.extracted_text, n.body), "
         "CASE WHEN x.document_id IS NULL THEN 'ARCHIVED_BODY' ELSE 'EXTRACTED_PDF' END FROM news_documents n "
         "LEFT JOIN latest_text x ON x.document_id = n.document_id AND x.row_no = 1 "
-        f"WHERE n.scope = 'STOCK' AND n.evidence_role = 'EVIDENCE_ELIGIBLE' AND n.ticker IN ({placeholders}) "
+        # A financial-media mention can inform the separate event/selection
+        # shadow, but cannot create a hard risk veto intended for official
+        # company disclosures.  NULL keeps pre-provenance legacy facts usable.
+        f"WHERE n.scope = 'STOCK' AND n.evidence_role = 'EVIDENCE_ELIGIBLE' "
+        "AND (n.source_type = 'OFFICIAL_DISCLOSURE' OR n.source_type IS NULL) "
+        f"AND n.ticker IN ({placeholders}) "
         "AND n.published_at <= n.received_at AND n.received_at BETWEEN ? AND ? ORDER BY n.received_at, n.document_id",
         [*tickers, effective_as_of - timedelta(hours=latest_hours), effective_as_of],
     ).fetchall()
