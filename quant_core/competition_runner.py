@@ -23,6 +23,25 @@ from .derived_evaluation import validate_benchmark_dates
 from .strategy_scorecard import StrategyScorecardStore
 
 _STRATEGIES={'pure_momentum_v1':pure_momentum_strategy_spec,'kdj_manual_v1':kdj_manual_strategy_spec,'macd_manual_v1':macd_manual_strategy_spec}
+NON_VOLUME_STRATEGY_MULTIPLIER=Decimal('1')  # ignored whenever an explicit non-baseline StrategySpec is supplied
+
+def _sell_only_stamp_rate(value):
+    if not isinstance(value,str) or not value.endswith('_sell_only') or value.count('_') != 2: raise ValueError('frozen stamp duty must use <decimal>_sell_only')
+    rate=Decimal(value.removesuffix('_sell_only'))
+    if rate < 0: raise ValueError('frozen stamp duty cannot be negative')
+    return rate
+
+def _cleanup_failed_run(connection, account_id, experiment_id):
+    connection.execute('DELETE FROM strategy_experiment_competition_lineage WHERE experiment_id=?',[experiment_id])
+    connection.execute('DELETE FROM strategy_experiment_results WHERE experiment_id=?',[experiment_id])
+    connection.execute('DELETE FROM strategy_experiments WHERE experiment_id=?',[experiment_id])
+    lot_ids=[r[0] for r in connection.execute('SELECT lot_id FROM sim_position_lots WHERE account_id=?',[account_id]).fetchall()]
+    if lot_ids:
+        marks=','.join('?' for _ in lot_ids)
+        connection.execute('DELETE FROM sim_lot_disposal_events WHERE lot_id IN ('+marks+')',lot_ids)
+        connection.execute('DELETE FROM sim_lot_adjustment_events WHERE lot_id IN ('+marks+')',lot_ids)
+    for table in ('sim_dividend_entitlements','sim_exit_signals','sim_suspension_valuation_events','sim_positions_daily','sim_nav_daily','sim_executions','sim_order_intents','sim_position_lots','ledger_journal_entries','sim_accounts'):
+        connection.execute(f'DELETE FROM {table} WHERE account_id=?',[account_id])
 
 def preflight(connection, profile_id, profile_version, strategy_id):
     if strategy_id not in _STRATEGIES: raise ValueError('unknown competition strategy')
@@ -43,7 +62,7 @@ def run(connection, *, account_id, profile_id, profile_version, strategy_id, ben
     profile,digest,strategy,start,end,snapshots,groups=preflight(connection,profile_id,profile_version,strategy_id)
     replay, engine=profile['replay_assumptions'],profile['engine_binding']; p=replay['portfolio']; fee=replay['fee_model']; ex=replay['exit_rule']; gap=replay['open_gap_gate']
     policy=PortfolioPolicy.fixed_target_notional(Decimal(p['target_notional_per_position']),int(p['max_positions']),int(p['lot_size']))
-    costs=FeeModel(fee['version'],Decimal(fee['commission_rate']),Decimal(fee['minimum_commission']),Decimal(str(fee['stamp_duty_rate']).split('_')[0]),Decimal(fee['transfer_fee_rate']),Decimal(fee['slippage_rate']))
+    costs=FeeModel(fee['version'],Decimal(fee['commission_rate']),Decimal(fee['minimum_commission']),_sell_only_stamp_rate(fee['stamp_duty_rate']),Decimal(fee['transfer_fee_rate']),Decimal(fee['slippage_rate']))
     exits=ExitRule(Decimal(ex['stop_loss_rate']),Decimal(ex['take_profit_min_rate']),Decimal(ex['trailing_drawdown_rate']),int(ex['max_holding_days']))
     open_gap=OpenGapPolicy(Decimal(gap['max_gap_up']),Decimal(gap['max_gap_down']))
     status=TradingStatusStore(connection).suspended_tickers_by_snapshot_ids(engine['trading_status_snapshot_ids'],start,end)
@@ -51,10 +70,14 @@ def run(connection, *, account_id, profile_id, profile_version, strategy_id, ben
     days=sorted({b.trade_date for b in bars}); validate_benchmark_dates(benchmark_bars,days)
     spec=ExperimentSpec(strategy,policy,exits,costs.version,start,end,tuple(snapshots),'PIT_GROUP:'+profile['universe_binding']['group_id'],profile['benchmark_binding']['identifier'],'NORMALIZED_DATASET_SHA256:'+profile['benchmark_binding']['dataset_hash'],Decimal(replay['initial_cash']),open_gap)
     fingerprint=execution_fingerprint(profile,strategy.__dict__)
-    eid=str(uuid4()); SettlementService(connection).create_account(account_id,'Competition '+eid[:8],Decimal(replay['initial_cash']),start)
-    ExperimentStore(connection).create(eid,account_id,spec,created_at)
-    connection.execute('INSERT INTO strategy_experiment_competition_lineage VALUES (?,?,?,?,?,?)',[eid,profile_id,profile_version,digest,fingerprint,created_at])
-    replay=replay_daily_strategy(connection,bars,days,BacktestConfig(account_id,start,end,int(p['lot_size']),int(engine['feature_lookback_days']),int(replay['candidate_top_n']),Decimal('1'),strategy,policy,open_gap),costs,exits,universe_by_date=groups,suspended_tickers_by_date=status)
-    metrics=calculate_metrics(connection,account_id,benchmark_bars); ExperimentStore(connection).store_result(eid,metrics,created_at)
-    scorecard_id=StrategyScorecardStore(connection).store_frozen_experiment_scorecard(eid,profile_id,profile_version,created_at)
-    return eid,scorecard_id,replay,metrics
+    eid=str(uuid4())
+    try:
+        SettlementService(connection).create_account(account_id,'Competition '+eid[:8],Decimal(replay['initial_cash']),start)
+        ExperimentStore(connection).create(eid,account_id,spec,created_at)
+        connection.execute('INSERT INTO strategy_experiment_competition_lineage VALUES (?,?,?,?,?,?)',[eid,profile_id,profile_version,digest,fingerprint,created_at])
+        replay=replay_daily_strategy(connection,bars,days,BacktestConfig(account_id,start,end,int(p['lot_size']),int(engine['feature_lookback_days']),int(replay['candidate_top_n']),NON_VOLUME_STRATEGY_MULTIPLIER,strategy,policy,open_gap),costs,exits,universe_by_date=groups,suspended_tickers_by_date=status)
+        metrics=calculate_metrics(connection,account_id,benchmark_bars); ExperimentStore(connection).store_result(eid,metrics,created_at)
+        scorecard_id=StrategyScorecardStore(connection).store_frozen_experiment_scorecard(eid,profile_id,profile_version,created_at)
+        return eid,scorecard_id,replay,metrics
+    except Exception:
+        _cleanup_failed_run(connection,account_id,eid); raise

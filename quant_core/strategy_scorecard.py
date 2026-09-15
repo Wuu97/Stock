@@ -137,6 +137,8 @@ class StrategyScorecardStore:
         """Create a scorecard against an existing frozen Profile; never derives one."""
         row=self.connection.execute("SELECT e.spec_json,e.spec_sha256,e.account_id,r.metrics_json,p.profile_sha256 FROM strategy_experiments e JOIN strategy_experiment_results r ON r.experiment_id=e.experiment_id JOIN competition_profiles p ON p.competition_profile_id=? AND p.competition_profile_version=? WHERE e.experiment_id=?",[profile_id,profile_version,experiment_id]).fetchone()
         if not row: raise ValueError('experiment result or frozen competition profile is missing')
+        lineage=self.connection.execute("SELECT competition_profile_hash FROM strategy_experiment_competition_lineage WHERE experiment_id=? AND competition_profile_id=? AND competition_profile_version=?",[experiment_id,profile_id,profile_version]).fetchone()
+        if not lineage or lineage[0] != row[4]: raise ValueError('experiment competition lineage does not match frozen profile')
         existing=self.connection.execute("SELECT scorecard_id FROM strategy_scorecards WHERE source_experiment_id=? AND evaluation_method_version=?",[experiment_id,evaluation_method_version]).fetchone()
         if existing:return existing[0]
         spec=json.loads(row[0]); metrics=build_backtest_metrics(self.connection,row[2],json.loads(row[3])); payload=json.dumps(_jsonable(metrics),ensure_ascii=False,sort_keys=True,separators=(',',':'))
