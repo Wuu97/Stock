@@ -643,6 +643,26 @@ CREATE TABLE IF NOT EXISTS competition_profiles (
     PRIMARY KEY (competition_profile_id, competition_profile_version)
 );
 
+CREATE TABLE IF NOT EXISTS strategy_evaluations (
+    evaluation_id VARCHAR PRIMARY KEY,
+    source_experiment_id VARCHAR NOT NULL REFERENCES strategy_experiments(experiment_id),
+    evaluation_profile_id VARCHAR NOT NULL,
+    evaluation_profile_version VARCHAR NOT NULL,
+    evaluation_profile_hash VARCHAR NOT NULL,
+    benchmark_dataset_hash VARCHAR NOT NULL,
+    execution_fingerprint VARCHAR NOT NULL,
+    evaluation_method_version VARCHAR NOT NULL,
+    status VARCHAR NOT NULL CHECK (status IN ('PENDING','COMPLETE','FAILED')),
+    created_at TIMESTAMPTZ NOT NULL,
+    UNIQUE(source_experiment_id,evaluation_profile_id,evaluation_profile_version,benchmark_dataset_hash,evaluation_method_version)
+);
+CREATE TABLE IF NOT EXISTS strategy_evaluation_results (
+    evaluation_id VARCHAR PRIMARY KEY REFERENCES strategy_evaluations(evaluation_id),
+    metrics_json VARCHAR NOT NULL,
+    metrics_sha256 VARCHAR NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+);
+
 -- Append-only scorecard snapshots.  A stage is deliberately never blended with another stage.
 CREATE TABLE IF NOT EXISTS strategy_scorecards (
     scorecard_id VARCHAR PRIMARY KEY,
