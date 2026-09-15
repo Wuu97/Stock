@@ -132,6 +132,17 @@ class StrategyScorecardStore:
         ])
         return scorecard_id
 
+    def store_frozen_experiment_scorecard(self, experiment_id: str, profile_id: str, profile_version: str, as_of_time: datetime,
+                                          evaluation_method_version: str = EVALUATION_METHOD_VERSION) -> str:
+        """Create a scorecard against an existing frozen Profile; never derives one."""
+        row=self.connection.execute("SELECT e.spec_json,e.spec_sha256,e.account_id,r.metrics_json,p.profile_sha256 FROM strategy_experiments e JOIN strategy_experiment_results r ON r.experiment_id=e.experiment_id JOIN competition_profiles p ON p.competition_profile_id=? AND p.competition_profile_version=? WHERE e.experiment_id=?",[profile_id,profile_version,experiment_id]).fetchone()
+        if not row: raise ValueError('experiment result or frozen competition profile is missing')
+        existing=self.connection.execute("SELECT scorecard_id FROM strategy_scorecards WHERE source_experiment_id=? AND evaluation_method_version=?",[experiment_id,evaluation_method_version]).fetchone()
+        if existing:return existing[0]
+        spec=json.loads(row[0]); metrics=build_backtest_metrics(self.connection,row[2],json.loads(row[3])); payload=json.dumps(_jsonable(metrics),ensure_ascii=False,sort_keys=True,separators=(',',':'))
+        sid=str(uuid4()); self.connection.execute("INSERT INTO strategy_scorecards VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",[sid,spec['strategy']['strategy_id'],spec['strategy']['strategy_version'],profile_id,profile_version,'BACKTEST',spec['start_date'],spec['end_date'],as_of_time,evaluation_method_version,row[1],experiment_id,None,None,payload,sha256(payload.encode()).hexdigest(),sample_status(metrics),as_of_time])
+        return sid
+
     def _evaluation_config_hash(self, evaluation_id: str) -> str:
         row = self.connection.execute("SELECT evaluation_profile_hash FROM strategy_evaluations WHERE evaluation_id = ?", [evaluation_id]).fetchone()
         if not row:

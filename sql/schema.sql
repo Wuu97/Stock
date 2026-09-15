@@ -642,6 +642,11 @@ CREATE TABLE IF NOT EXISTS competition_profiles (
     created_at TIMESTAMPTZ NOT NULL,
     PRIMARY KEY (competition_profile_id, competition_profile_version)
 );
+CREATE TABLE IF NOT EXISTS strategy_experiment_competition_lineage (
+ experiment_id VARCHAR PRIMARY KEY REFERENCES strategy_experiments(experiment_id), competition_profile_id VARCHAR NOT NULL,
+ competition_profile_version VARCHAR NOT NULL, competition_profile_hash VARCHAR NOT NULL, execution_fingerprint VARCHAR NOT NULL,
+ created_at TIMESTAMPTZ NOT NULL, FOREIGN KEY (competition_profile_id,competition_profile_version) REFERENCES competition_profiles(competition_profile_id,competition_profile_version)
+);
 
 CREATE TABLE IF NOT EXISTS strategy_evaluations (
     evaluation_id VARCHAR PRIMARY KEY,

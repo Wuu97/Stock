@@ -14,7 +14,9 @@ def _hash(value): return sha256(_canonical(value).encode()).hexdigest()
 def execution_fingerprint(profile, strategy):
     fields = ("universe_binding", "market_data_binding", "replay_assumptions")
     if any(key not in profile for key in fields): raise ValueError("profile lacks replay binding")
-    return _hash({**{key: profile[key] for key in fields}, "strategy": strategy})
+    payload = {**{key: profile[key] for key in fields}, "strategy": strategy}
+    if "engine_binding" in profile: payload["engine_binding"] = profile["engine_binding"]
+    return _hash(payload)
 
 
 def load_frozen_profile(connection, profile_id, profile_version):
