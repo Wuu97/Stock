@@ -3,7 +3,7 @@ import argparse, csv, json
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from quant_core.database import writer_connection
-from quant_core.experiments import BenchmarkClose, ExperimentStore, calculate_metrics
+from quant_core.experiments import BenchmarkClose, calculate_metrics
 from quant_core.strategy_scorecard import CompetitionProfile, StrategyScorecardStore
 
 def main():
@@ -17,8 +17,5 @@ def main():
   expected=c.execute("select count(distinct trade_date) from market_data_snapshots where source_channel='tushare_history_daily' and trade_date between ? and ?",[start,end]).fetchone()[0]
   if nav!=(expected,expected,start,end) or c.execute("select 1 from sim_order_intents where account_id=? and order_status='PENDING'",[a.account_id]).fetchone(): raise ValueError('replay is not complete')
   profile=CompetitionProfile(a.profile_id,a.profile_version,json.loads(pr[0])); rows=csv.DictReader(open(a.benchmark_csv)); bench=[BenchmarkClose(date.fromisoformat(r['trade_date']),Decimal(r['adj_close'])) for r in rows if r['ticker']==a.benchmark_ticker]
-  store=ExperimentStore(c)
-  if not c.execute('select 1 from strategy_experiment_results where experiment_id=?',[a.experiment_id]).fetchone(): store.store_result(a.experiment_id,calculate_metrics(c,a.account_id,bench),datetime.now(timezone.utc))
-  score=StrategyScorecardStore(c).store_experiment_scorecard(a.experiment_id,profile,'BACKTEST',datetime.now(timezone.utc))
-  print(json.dumps({'state':'SCORECARD_COMPLETE','scorecard_id':score}))
+  raise RuntimeError('legacy finalize is disabled; use derived evaluation lineage')
 if __name__=='__main__': main()
