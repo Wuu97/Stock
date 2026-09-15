@@ -17,9 +17,10 @@ class PortfolioPolicy:
     board_lot: int = 100
     max_positions: Optional[int] = None
     cash_reserve: Decimal = Decimal("0")
+    target_notional_per_position: Optional[Decimal] = None
 
     def __post_init__(self) -> None:
-        if self.method not in {"FIXED_SHARES", "EQUAL_WEIGHT"}:
+        if self.method not in {"FIXED_SHARES", "EQUAL_WEIGHT", "FIXED_TARGET_NOTIONAL"}:
             raise ValueError("unsupported portfolio method")
         if self.board_lot <= 0 or self.board_lot % 100:
             raise ValueError("board_lot must be a positive 100-share multiple")
@@ -27,6 +28,8 @@ class PortfolioPolicy:
             raise ValueError("max_positions must be positive when set")
         if not Decimal("0") <= self.cash_reserve < Decimal("1"):
             raise ValueError("cash_reserve must be between zero and one")
+        if self.method == "FIXED_TARGET_NOTIONAL" and (self.target_notional_per_position is None or self.target_notional_per_position <= 0):
+            raise ValueError("fixed target notional requires a positive target")
 
     @classmethod
     def fixed_shares(cls, shares: int, max_positions: Optional[int] = None) -> "PortfolioPolicy":
@@ -37,6 +40,10 @@ class PortfolioPolicy:
     @classmethod
     def equal_weight(cls, max_positions: int, cash_reserve: Decimal = Decimal("0")) -> "PortfolioPolicy":
         return cls("EQUAL_WEIGHT", 100, max_positions, cash_reserve)
+
+    @classmethod
+    def fixed_target_notional(cls, target_notional_per_position: Decimal, max_positions: int, lot_size: int = 100) -> "PortfolioPolicy":
+        return cls("FIXED_TARGET_NOTIONAL", lot_size, max_positions, Decimal("0"), target_notional_per_position)
 
 
 @dataclass(frozen=True)
@@ -56,6 +63,14 @@ def construct_buys(recommendations: Iterable[Recommendation], policy: PortfolioP
     selected = candidates[:slots]
     if policy.method == "FIXED_SHARES":
         return tuple(PlannedBuy(item.ticker, policy.board_lot, _estimated_buy_cash(item.close, policy.board_lot, fee)) for item in selected)
+    if policy.method == "FIXED_TARGET_NOTIONAL":
+        planned = []
+        for item in selected:
+            shares = int((policy.target_notional_per_position / item.close / policy.board_lot).to_integral_value(rounding=ROUND_DOWN)) * policy.board_lot
+            estimated = _estimated_buy_cash(item.close, shares, fee) if shares else Decimal("0")
+            if shares and estimated <= available_cash:
+                planned.append(PlannedBuy(item.ticker, shares, estimated))
+        return tuple(planned)
     if not selected:
         return ()
     budget = money(available_cash * (Decimal("1") - policy.cash_reserve))
