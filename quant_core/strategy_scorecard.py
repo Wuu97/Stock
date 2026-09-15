@@ -129,12 +129,13 @@ def build_backtest_metrics(connection, account_id: str, base_metrics: Mapping[st
         "rolling_sharpe_window_days": ROLLING_SHARPE_WINDOW_DAYS,
         "rolling_sharpe_std": _rolling_sharpe_std(daily_returns, ROLLING_SHARPE_WINDOW_DAYS),
         "positive_month_ratio": _positive_month_ratio(connection, account_id),
-        "worst_period_return": min(daily_returns) if daily_returns else None,
+        "worst_daily_return": min(daily_returns) if daily_returns else None,
     })
     return base
 
 
 def sample_status(metrics: Mapping[str, object]) -> str:
+    """Presentation/comparison sufficiency only; never a strategy-promotion gate."""
     if metrics.get("nav_observations", 0) < 2:
         return "INCOMPLETE"
     if metrics.get("pending_order_count", 0):
@@ -272,7 +273,7 @@ def _rolling_sharpe_std(returns, window):
 
 
 def _sharpe(returns):
-    return _sortino(returns) if False else (None if len(returns) < 2 else _plain_sharpe(returns))
+    return None if len(returns) < 2 else _plain_sharpe(returns)
 
 
 def _plain_sharpe(returns):

@@ -109,7 +109,10 @@ def _listing_age_is_eligible(ticker: str, as_of_trade_date: date, min_days: int,
         return True
     if listing_dates is None or trading_days is None or ticker not in listing_dates:
         return False
-    return sum(listing_dates[ticker] <= day <= as_of_trade_date for day in trading_days) >= min_days
+    observed_days = sorted(set(day for day in trading_days if day <= as_of_trade_date))
+    if not observed_days:
+        return False
+    return sum(listing_dates[ticker] <= day for day in observed_days) >= min_days
 
 
 def _st_is_eligible(ticker: str, require_non_st: bool, st_flags: Optional[Mapping[str, bool]]) -> bool:
@@ -195,15 +198,16 @@ class UniverseService:
 
     def create_snapshot(self, market_cap_snapshot_id: str, as_of_trade_date: date,
                         rule: Union[DynamicUniverseRule, LiquidityUniverseRule], bars: Iterable[DayBar], created_at: datetime,
-                        listing_snapshot_id: Optional[str] = None, st_backfill_run_id: Optional[str] = None) -> str:
+                        listing_snapshot_id: Optional[str] = None, st_backfill_run_id: Optional[str] = None,
+                        trading_days: Optional[Sequence[date]] = None) -> str:
         values = self.connection.execute("SELECT ticker, total_market_cap FROM market_cap_values WHERE market_cap_snapshot_id = ?",
                                          [market_cap_snapshot_id]).fetchall()
         caps = {ticker: Decimal(str(cap)) for ticker, cap in values}
-        listing_dates, trading_days = self._listing_inputs(as_of_trade_date, rule, listing_snapshot_id)
+        listing_dates, calendar_days = self._listing_inputs(as_of_trade_date, rule, listing_snapshot_id, trading_days)
         st_flags = self._st_flags(as_of_trade_date, rule, st_backfill_run_id)
-        members = (select_dynamic_universe(bars, caps, as_of_trade_date, rule, listing_dates, trading_days, st_flags)
+        members = (select_dynamic_universe(bars, caps, as_of_trade_date, rule, listing_dates, calendar_days, st_flags)
                    if isinstance(rule, DynamicUniverseRule)
-                   else select_liquidity_universe(bars, caps, as_of_trade_date, rule, listing_dates, trading_days, st_flags))
+                   else select_liquidity_universe(bars, caps, as_of_trade_date, rule, listing_dates, calendar_days, st_flags))
         snapshot_id = str(uuid4())
         self.connection.execute(
             "INSERT INTO universe_snapshots (universe_snapshot_id, group_name, as_of_trade_date, "
@@ -221,7 +225,8 @@ class UniverseService:
         return snapshot_id
 
     def _listing_inputs(self, as_of_trade_date: date, rule: Union[DynamicUniverseRule, LiquidityUniverseRule],
-                        listing_snapshot_id: Optional[str]) -> tuple[Optional[Mapping[str, date]], Optional[Sequence[date]]]:
+                        listing_snapshot_id: Optional[str], trading_days: Optional[Sequence[date]] = None
+                        ) -> tuple[Optional[Mapping[str, date]], Optional[Sequence[date]]]:
         if rule.min_listing_trading_days == 0:
             return None, None
         if not listing_snapshot_id:
@@ -231,12 +236,11 @@ class UniverseService:
         ).fetchall()
         if not rows:
             raise ValueError("listing snapshot is missing or empty")
-        trading_days = [row[0] for row in self.connection.execute(
+        calendar_days = list(trading_days) if trading_days is not None else [row[0] for row in self.connection.execute(
             "SELECT DISTINCT trade_date FROM daily_bars WHERE trade_date <= ? ORDER BY trade_date", [as_of_trade_date]
         ).fetchall()]
-        if len(trading_days) < rule.min_listing_trading_days:
-            raise ValueError("local market calendar is insufficient for listing-age eligibility")
-        return {ticker: list_date for ticker, list_date in rows}, trading_days
+        calendar_days = [day for day in calendar_days if day <= as_of_trade_date]
+        return {ticker: list_date for ticker, list_date in rows}, calendar_days
 
     def _st_flags(self, as_of_trade_date: date, rule: Union[DynamicUniverseRule, LiquidityUniverseRule],
                   st_backfill_run_id: Optional[str]) -> Optional[Mapping[str, bool]]:

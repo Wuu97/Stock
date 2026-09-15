@@ -55,6 +55,17 @@ def test_listing_age_gate_uses_trading_days_and_fails_closed_when_missing():
     assert [member.ticker for member in members] == ["OLD"]
 
 
+def test_listing_age_gate_allows_exactly_the_sixtieth_trading_day():
+    start = date(2026, 1, 1)
+    days = [start + timedelta(days=index) for index in range(61)]
+    bars = [_bar(day, ticker, Decimal("10") + index) for ticker in ("SIXTY", "FIFTY_NINE")
+            for index, day in enumerate(days)]
+    rule = DynamicUniverseRule("age_60", Decimal("1"), 30, 10, min_listing_trading_days=60)
+    members = select_dynamic_universe(bars, {"SIXTY": Decimal("10"), "FIFTY_NINE": Decimal("10")}, days[-1], rule,
+                                      {"SIXTY": days[1], "FIFTY_NINE": days[2]}, days)
+    assert [member.ticker for member in members] == ["SIXTY"]
+
+
 def test_non_st_gate_excludes_flagged_and_missing_supplier_records():
     start = date(2026, 7, 1)
     bars = [_bar(start + timedelta(days=index), ticker, Decimal("10") + index)
@@ -80,6 +91,25 @@ def test_universe_service_fails_closed_when_non_st_evidence_is_not_supplied():
             "cap", date(2026, 8, 6),
             DynamicUniverseRule("st_required", Decimal("1"), 5, 10, require_non_st=True), bars, now,
         )
+
+
+def test_snapshot_retains_historical_listing_and_st_lineage():
+    con = duckdb.connect(":memory:")
+    con.execute(Path("sql/schema.sql").read_text())
+    service = UniverseService(con)
+    now = datetime.now(timezone.utc)
+    day = date(2026, 8, 31)
+    service.store_market_caps("cap", now, "fixture", {"AAA": Decimal("10")}, now)
+    con.execute("INSERT INTO security_listing_snapshots VALUES ('listing_ref', 'historical_listing_fact_reference_v1', 'x', 'h', ?, ?)", [now, now])
+    con.execute("INSERT INTO security_listing_values VALUES ('listing_ref', 'AAA', ?, NULL, 'L')", [date(2026, 1, 1)])
+    con.execute("INSERT INTO st_history_backfill_runs VALUES ('st_run', 'baostock', ?, ?, 'baostock_is_st_supplier_fact_v1', ?)", [date(2026, 1, 1), day, now])
+    con.execute("INSERT INTO st_history_daily VALUES ('st_run', 'AAA', ?, false, 'x', 'h', ?)", [day, now])
+    days = [date(2026, 7, 1) + timedelta(days=index) for index in range(62)]
+    bars = [_bar(value, "AAA", Decimal("10") + index) for index, value in enumerate(days)]
+    snapshot_id = service.create_snapshot("cap", day, DynamicUniverseRule("historical", Decimal("1"), 30, 50,
+                                          min_listing_trading_days=60, require_non_st=True), bars, now,
+                                          listing_snapshot_id="listing_ref", st_backfill_run_id="st_run", trading_days=days)
+    assert con.execute("SELECT listing_snapshot_id, st_backfill_run_id FROM universe_snapshots WHERE universe_snapshot_id=?", [snapshot_id]).fetchone() == ("listing_ref", "st_run")
 
 
 def test_dynamic_universe_members_are_snapshotted_in_the_database():
@@ -132,6 +162,7 @@ def test_multiple_group_snapshots_remain_independent():
         "cap", date(2026, 8, 31),
         DynamicUniverseRule("mid_cap_momentum", Decimal("10000000000"), 30, 50), bars, now,
     )
+    assert large_cap != mid_cap
     assert service.member_tickers(large_cap) == {"AAA"}
     assert service.member_tickers(mid_cap) == {"AAA", "BBB"}
 

@@ -10,7 +10,6 @@ from datetime import datetime, timezone
 from hashlib import sha256
 import json
 from pathlib import Path
-from uuid import uuid4
 
 from quant_core.baostock_st_source import baostock_code, session
 from quant_core.database import read_connection, writer_connection
@@ -18,12 +17,13 @@ from quant_core.historical_listing_reference import baostock_lifecycle_row, unre
 from quant_core.security_eligibility import SecurityEligibilityStore, listing_rows
 
 
-def _required_tickers(connection, group_name: str) -> list[str]:
+def _required_tickers(connection, group_name: str, start_date: str, end_date: str) -> list[str]:
     return [row[0] for row in connection.execute("""
         SELECT DISTINCT v.ticker FROM universe_snapshots u
         JOIN market_cap_values v ON v.market_cap_snapshot_id=u.market_cap_snapshot_id
-        WHERE u.group_name=? AND v.total_market_cap >= 80000000000 ORDER BY 1
-    """, [group_name]).fetchall()]
+        WHERE u.group_name=? AND u.as_of_trade_date BETWEEN ? AND ?
+          AND v.total_market_cap >= 80000000000 ORDER BY 1
+    """, [group_name, start_date, end_date]).fetchall()]
 
 
 def _base_rows(connection, snapshot_id: str) -> list[dict]:
@@ -44,7 +44,7 @@ def main() -> None:
     parser.add_argument("--artifact-dir", default="data/security_eligibility")
     args = parser.parse_args()
     with read_connection(args.db) as connection:
-        required = _required_tickers(connection, args.universe_group_name)
+        required = _required_tickers(connection, args.universe_group_name, args.start_date, args.end_date)
         base = _base_rows(connection, args.source_listing_snapshot_id)
     by_ticker = {row["ts_code"]: row for row in base}
     missing = unresolved_tickers(required, by_ticker)
