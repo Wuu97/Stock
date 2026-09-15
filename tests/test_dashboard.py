@@ -42,7 +42,7 @@ def test_scorecard_dashboard_rows_are_read_only_and_expose_sample_status():
     connection.execute("INSERT INTO competition_profiles VALUES ('p', 'v1', '{}', 'hash', ?)", [now])
     connection.execute("INSERT INTO sim_accounts VALUES ('a', 'a', 'CNY', 1, 'r', 'fifo', 'ACTIVE', ?)", [now])
     connection.execute("INSERT INTO strategy_experiments VALUES ('e', 'a', '{}', 'cfg', ?)", [now])
-    connection.execute("INSERT INTO strategy_scorecards VALUES ('s', 'kdj_manual_v1', 'v1', 'p', 'v1', 'BACKTEST', '2026-01-01', '2026-02-01', ?, 'method', 'cfg', 'e', NULL, '{\"trade_count\":7,\"sharpe\":1.2}', 'metrics', 'LOW_SAMPLE', ?)", [now, now])
+    connection.execute("INSERT INTO strategy_scorecards VALUES ('s', 'kdj_manual_v1', 'v1', 'p', 'v1', 'BACKTEST', '2026-01-01', '2026-02-01', ?, 'method', 'cfg', 'e', NULL, NULL, '{\"trade_count\":7,\"sharpe\":1.2}', 'metrics', 'LOW_SAMPLE', ?)", [now, now])
     assert load_strategy_scorecards(connection) == [{
         "strategy_id": "kdj_manual_v1", "strategy_version": "v1", "profile_id": "p", "profile_version": "v1",
         "stage": "BACKTEST", "sample_start": "2026-01-01", "sample_end": "2026-02-01", "sample_status": "LOW_SAMPLE",

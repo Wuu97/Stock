@@ -663,7 +663,7 @@ CREATE TABLE IF NOT EXISTS strategy_evaluations (
     sample_start DATE NOT NULL,
     sample_end DATE NOT NULL,
     evaluation_method_version VARCHAR NOT NULL,
-    status VARCHAR NOT NULL CHECK (status IN ('PENDING','COMPLETE','FAILED')),
+    status VARCHAR NOT NULL CHECK (status IN ('PENDING','RESULT_COMPLETE','SCORECARD_COMPLETE','FAILED')),
     created_at TIMESTAMPTZ NOT NULL,
     UNIQUE(source_experiment_id,evaluation_profile_id,evaluation_profile_version,benchmark_dataset_hash,evaluation_method_version)
 );
@@ -689,6 +689,7 @@ CREATE TABLE IF NOT EXISTS strategy_scorecards (
     config_sha256 VARCHAR NOT NULL,
     source_experiment_id VARCHAR REFERENCES strategy_experiments(experiment_id),
     source_run_id VARCHAR REFERENCES recommendation_runs(run_id),
+    source_evaluation_id VARCHAR REFERENCES strategy_evaluations(evaluation_id),
     metrics_json VARCHAR NOT NULL,
     metrics_sha256 VARCHAR NOT NULL,
     sample_status VARCHAR NOT NULL CHECK (sample_status IN ('SUFFICIENT', 'LOW_SAMPLE', 'INCOMPLETE', 'INVALID')),
@@ -696,9 +697,10 @@ CREATE TABLE IF NOT EXISTS strategy_scorecards (
     FOREIGN KEY (competition_profile_id, competition_profile_version)
         REFERENCES competition_profiles(competition_profile_id, competition_profile_version),
     CHECK (sample_start <= sample_end),
-    CHECK ((source_experiment_id IS NOT NULL) <> (source_run_id IS NOT NULL)),
+    CHECK ((source_experiment_id IS NOT NULL)::INTEGER + (source_run_id IS NOT NULL)::INTEGER + (source_evaluation_id IS NOT NULL)::INTEGER = 1),
     UNIQUE (source_experiment_id, evaluation_method_version),
-    UNIQUE (source_run_id, evaluation_method_version)
+    UNIQUE (source_run_id, evaluation_method_version),
+    UNIQUE (source_evaluation_id, evaluation_method_version)
 );
 
 CREATE TABLE IF NOT EXISTS news_documents (

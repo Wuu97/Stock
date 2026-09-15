@@ -92,14 +92,51 @@ class StrategyScorecardStore:
         metrics = build_backtest_metrics(self.connection, account_id, json.loads(base_metrics_json))
         metrics_json = json.dumps(_jsonable(metrics), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         scorecard_id = str(uuid4())
-        self.connection.execute("INSERT INTO strategy_scorecards VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
+        self.connection.execute("INSERT INTO strategy_scorecards VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
             scorecard_id, spec["strategy"]["strategy_id"], spec["strategy"]["strategy_version"],
             profile.competition_profile_id, profile.competition_profile_version, evaluation_stage,
             spec["start_date"], spec["end_date"], as_of_time, evaluation_method_version, config_sha256,
-            experiment_id, None, metrics_json, sha256(metrics_json.encode()).hexdigest(),
+            experiment_id, None, None, metrics_json, sha256(metrics_json.encode()).hexdigest(),
             sample_status(metrics), as_of_time,
         ])
         return scorecard_id
+
+    def store_evaluation_scorecard(self, evaluation_id: str, as_of_time: datetime) -> str:
+        """Materialize a scorecard from an immutable, completed evaluation result."""
+        row = self.connection.execute("""
+            SELECT e.strategy_id, e.strategy_version, e.evaluation_profile_id,
+                   e.evaluation_profile_version, e.sample_start, e.sample_end,
+                   e.evaluation_method_version, e.source_experiment_id,
+                   x.account_id, r.metrics_json
+            FROM strategy_evaluations e
+            JOIN strategy_evaluation_results r ON r.evaluation_id = e.evaluation_id
+            JOIN strategy_experiments x ON x.experiment_id = e.source_experiment_id
+            WHERE e.evaluation_id = ? AND e.status IN ('RESULT_COMPLETE', 'SCORECARD_COMPLETE')
+        """, [evaluation_id]).fetchone()
+        if not row:
+            raise ValueError("evaluation result is not complete")
+        existing = self.connection.execute(
+            "SELECT scorecard_id FROM strategy_scorecards WHERE source_evaluation_id = ? AND evaluation_method_version = ?",
+            [evaluation_id, row[6]],
+        ).fetchone()
+        if existing:
+            return existing[0]
+        strategy_id, strategy_version, profile_id, profile_version, start, end, method, _, account_id, metrics_json = row
+        metrics = build_backtest_metrics(self.connection, account_id, json.loads(metrics_json))
+        payload = json.dumps(_jsonable(metrics), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        scorecard_id = str(uuid4())
+        self.connection.execute("INSERT INTO strategy_scorecards VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
+            scorecard_id, strategy_id, strategy_version, profile_id, profile_version, "BACKTEST",
+            start, end, as_of_time, method, self._evaluation_config_hash(evaluation_id),
+            None, None, evaluation_id, payload, sha256(payload.encode()).hexdigest(), sample_status(metrics), as_of_time,
+        ])
+        return scorecard_id
+
+    def _evaluation_config_hash(self, evaluation_id: str) -> str:
+        row = self.connection.execute("SELECT evaluation_profile_hash FROM strategy_evaluations WHERE evaluation_id = ?", [evaluation_id]).fetchone()
+        if not row:
+            raise ValueError("unknown evaluation")
+        return row[0]
 
 
 def build_backtest_metrics(connection, account_id: str, base_metrics: Mapping[str, object]) -> dict:
