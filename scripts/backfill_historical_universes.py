@@ -55,6 +55,16 @@ def main() -> None:
         calendar_days = [date.fromisoformat(value) for value in calendar_payload.get("trading_days", [])]
         if not calendar_days or min(calendar_days) > start or max(calendar_days) < end:
             raise ValueError("calendar reference does not cover requested historical range")
+        calendar_interval_days = {day for day in calendar_days if start <= day <= end}
+        snapshot_interval_days = set(days)
+        missing_snapshot_days = sorted(calendar_interval_days - snapshot_interval_days)
+        unexpected_snapshot_days = sorted(snapshot_interval_days - calendar_interval_days)
+        if missing_snapshot_days or unexpected_snapshot_days:
+            raise ValueError(
+                "historical market snapshot calendar mismatch; "
+                f"missing_snapshot_days={[day.isoformat() for day in missing_snapshot_days]}; "
+                f"unexpected_snapshot_days={[day.isoformat() for day in unexpected_snapshot_days]}"
+            )
         service, store, created = UniverseService(connection), MarketDataStore(connection), []
         for day in days:
             cap_id = f"tushare_history_cap_{day:%Y%m%d}"
