@@ -6,14 +6,14 @@ import json
 import pytest
 
 from quant_core.derived_evaluation import (DerivedEvaluationRunner, execution_fingerprint,
-                                           validate_replay)
+                                           validate_replay, benchmark_binding_identity)
 from quant_core.experiments import BenchmarkClose
 from tests.test_strategy_scorecard import _fixture
 
 
 def _payload(benchmark_hash='benchmark-hash', replay='f', market=None):
     return {"universe_binding": {}, "market_data_binding": market or {}, "replay_assumptions": {"fee": replay},
-            "benchmark_binding": {"identifier": "BENCH", "version": "v1", "dataset_hash": benchmark_hash}}
+            "benchmark_binding": {"identifier": "BENCH", "dataset_version": "v1", "dataset_hash": benchmark_hash}}
 
 
 def _put_profile(connection, profile_id, version, payload, now, digest=None):
@@ -65,6 +65,21 @@ def test_fingerprint_excludes_benchmark_but_includes_execution_fields():
     assert execution_fingerprint(source, strategy) != execution_fingerprint(execution_change, strategy)
 
 
+def test_normalized_v3_benchmark_binding_is_strict_about_identifier_version_and_hash():
+    profile = _payload('hash')
+    assert benchmark_binding_identity(profile) == ('BENCH', 'v1', 'hash')
+    for field, value in [('identifier', 'WRONG'), ('dataset_version', 'wrong'), ('dataset_hash', 'wrong')]:
+        broken = _payload('hash'); broken['benchmark_binding'][field] = value
+        assert benchmark_binding_identity(broken) != ('BENCH', 'v1', 'hash')
+
+
+@pytest.mark.parametrize('override', [{'benchmark_identifier': 'WRONG'}, {'benchmark_version': 'wrong'}, {'benchmark_dataset_hash': 'wrong'}])
+def test_runner_rejects_wrong_normalized_benchmark_identity(override):
+    _, now, runner = _runner_fixture()
+    with pytest.raises(ValueError, match='benchmark does not match'):
+        _run(runner, now, **override)
+
+
 def test_profile_hash_mismatch_and_execution_profile_mismatch_fail_closed():
     connection, now, runner = _runner_fixture()
     connection.execute("UPDATE competition_profiles SET profile_sha256='wrong' WHERE competition_profile_id='source'")
@@ -110,3 +125,9 @@ def test_replay_validator_rejects_source_account_lineage():
     connection, _, _ = _runner_fixture()
     with pytest.raises(ValueError, match='account lineage'):
         validate_replay(connection, 'other', '2026-09-01', '2026-09-03', experiment_id='experiment')
+
+
+def test_replay_validator_accepts_multiple_market_snapshots_on_one_trading_day():
+    connection, now, _ = _runner_fixture()
+    connection.execute("INSERT INTO market_data_snapshots VALUES (?,?,?,?,?,?,?,?)", ['m2-revision', date(2026, 9, 2), 'fixture', now, now, 'fixture', 'revised', now])
+    assert validate_replay(connection, 'acc', '2026-09-01', '2026-09-03', experiment_id='experiment', profile=_payload(market={"source": "fixture"}))

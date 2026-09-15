@@ -27,6 +27,28 @@ def load_frozen_profile(connection, profile_id, profile_version):
     return payload, row[1]
 
 
+def benchmark_binding_identity(profile):
+    """Return the strict benchmark identity from the frozen profile schema.
+
+    V2 profiles use the legacy ``version`` key; V3 normalized datasets use the
+    canonical ``dataset_version`` key.  A profile carrying both must agree.
+    """
+    binding = profile.get("benchmark_binding")
+    if not isinstance(binding, dict): raise ValueError("frozen profile lacks benchmark binding")
+    version = binding.get("dataset_version")
+    legacy = binding.get("version")
+    if version is None:
+        # Explicitly limited compatibility for the historical archived CSV schema.
+        if binding.get("source") != "archived_adjusted_close_csv" or not legacy:
+            raise ValueError("benchmark binding lacks canonical dataset_version")
+        version = legacy
+    elif legacy is not None and legacy != version:
+        raise ValueError("benchmark binding version aliases disagree")
+    if not all((binding.get("identifier"), version, binding.get("dataset_hash"))):
+        raise ValueError("benchmark binding is incomplete")
+    return binding["identifier"], version, binding["dataset_hash"]
+
+
 def validate_replay(connection, account_id, start, end, *, experiment_id=None, profile=None, strategy=None):
     """Validate account/experiment/strategy/NAV/calendar/binding lineage; fail closed."""
     spec = None
@@ -45,8 +67,10 @@ def validate_replay(connection, account_id, start, end, *, experiment_id=None, p
         if universe.get("date_range") and list(map(str, universe["date_range"])) != [str(start), str(end)]: raise ValueError("universe binding sample range mismatch")
         if spec and universe.get("group_id") and universe["group_id"] != spec["universe_reference"]: raise ValueError("source experiment/universe lineage mismatch")
         if market.get("source"):
-            actual = [str(r[0]) for r in connection.execute("SELECT trade_date FROM market_data_snapshots WHERE source_channel=? AND trade_date BETWEEN ? AND ? ORDER BY 1", [market["source"], start, end]).fetchall()]
-            if len(actual) != len(set(actual)) or actual != [str(day) for day in dates]: raise ValueError("market calendar coverage does not match NAV")
+            # A source can publish several immutable snapshots for one trading
+            # day; calendar coverage is about dates, not snapshot cardinality.
+            actual = [str(r[0]) for r in connection.execute("SELECT DISTINCT trade_date FROM market_data_snapshots WHERE source_channel=? AND trade_date BETWEEN ? AND ? ORDER BY 1", [market["source"], start, end]).fetchall()]
+            if actual != [str(day) for day in dates]: raise ValueError("market calendar coverage does not match NAV")
     return dates
 
 
@@ -90,8 +114,8 @@ class DerivedEvaluationRunner:
     def run(self, *, source_experiment_id, source_profile_id, source_profile_version, evaluation_profile_id, evaluation_profile_version, benchmark_bars, benchmark_dataset_hash, benchmark_identifier, benchmark_version, evaluation_method_version, created_at):
         source_profile, source_hash = load_frozen_profile(self.connection, source_profile_id, source_profile_version)
         evaluation_profile, evaluation_hash = load_frozen_profile(self.connection, evaluation_profile_id, evaluation_profile_version)
-        binding = evaluation_profile.get("benchmark_binding", {})
-        if binding and (binding.get("dataset_hash") != benchmark_dataset_hash or binding.get("identifier") != benchmark_identifier or binding.get("version") != benchmark_version): raise ValueError("benchmark does not match frozen evaluation profile")
+        expected_identifier, expected_version, expected_hash = benchmark_binding_identity(evaluation_profile)
+        if (expected_hash != benchmark_dataset_hash or expected_identifier != benchmark_identifier or expected_version != benchmark_version): raise ValueError("benchmark does not match frozen evaluation profile")
         source = self.connection.execute("SELECT account_id,spec_json FROM strategy_experiments WHERE experiment_id=?", [source_experiment_id]).fetchone()
         if not source: raise ValueError("unknown source experiment")
         spec = json.loads(source[1]); nav_dates = validate_replay(self.connection, source[0], spec["start_date"], spec["end_date"], experiment_id=source_experiment_id, profile=source_profile, strategy=spec["strategy"])
