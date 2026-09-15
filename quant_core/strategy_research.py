@@ -20,6 +20,8 @@ MOMENTUM_VOLUME_PROVIDER_TYPE = "MOMENTUM_VOLUME_COMPOSITE"
 ML_RIDGE_PROVIDER_TYPE = "ML_RIDGE_EXCESS_RETURN"
 ML_RIDGE_MARKET_GUARD_PROVIDER_TYPE = "ML_RIDGE_MARKET_GUARD"
 BULLDOZER_OVERNIGHT_PROVIDER_TYPE = "BULLDOZER_OVERNIGHT_DAILY_PROXY"
+KDJ_MANUAL_PROVIDER_TYPE = "KDJ_MANUAL_RULE"
+MACD_MANUAL_PROVIDER_TYPE = "MACD_MANUAL_RULE"
 
 
 @dataclass(frozen=True)
@@ -130,6 +132,42 @@ class MomentumVolumeScoreProvider:
             "momentum_weight": str(momentum_weight), "provider": MOMENTUM_VOLUME_PROVIDER_TYPE,
         }) for index, (row, score) in enumerate(ranked, start=1))
         return StrategyResult(self.spec, as_of_trade_date, picks)
+
+
+@dataclass(frozen=True)
+class KDJManualScoreProvider:
+    """Frozen research-only KDJ control rule: K>D, K<80, J<100."""
+    spec: StrategySpec
+
+    def score(self, features: Iterable[FeatureRow], as_of_trade_date: date) -> StrategyResult:
+        top_n = _positive_top_n(self.spec.parameters)
+        qualified = [row for row in features if all(value is not None for value in (row.kdj_k, row.kdj_d, row.kdj_j))
+                     and row.kdj_k > row.kdj_d and row.kdj_k < 80 and row.kdj_j < 100]
+        ranked = sorted(qualified, key=lambda row: (row.kdj_k - row.kdj_d, row.ticker), reverse=True)[:top_n]
+        return StrategyResult(self.spec, as_of_trade_date, tuple(
+            Recommendation(row.ticker, index, row.kdj_k - row.kdj_d, row.close, {
+                "provider": KDJ_MANUAL_PROVIDER_TYPE, "rule": "K>D AND K<80 AND J<100",
+                "k": str(row.kdj_k), "d": str(row.kdj_d), "j": str(row.kdj_j),
+            }) for index, row in enumerate(ranked, start=1)
+        ))
+
+
+@dataclass(frozen=True)
+class MACDManualScoreProvider:
+    """Frozen research-only MACD control rule from the dashboard heuristic."""
+    spec: StrategySpec
+
+    def score(self, features: Iterable[FeatureRow], as_of_trade_date: date) -> StrategyResult:
+        top_n = _positive_top_n(self.spec.parameters)
+        qualified = [row for row in features if all(value is not None for value in (row.macd, row.macd_signal, row.previous_macd))
+                     and row.macd > row.macd_signal and row.macd > 0 and row.macd > row.previous_macd]
+        ranked = sorted(qualified, key=lambda row: (row.macd - row.macd_signal, row.ticker), reverse=True)[:top_n]
+        return StrategyResult(self.spec, as_of_trade_date, tuple(
+            Recommendation(row.ticker, index, row.macd - row.macd_signal, row.close, {
+                "provider": MACD_MANUAL_PROVIDER_TYPE, "rule": "MACD>SIGNAL AND MACD>0 AND MACD>PREVIOUS_MACD",
+                "macd": str(row.macd), "signal": str(row.macd_signal), "previous_macd": str(row.previous_macd),
+            }) for index, row in enumerate(ranked, start=1)
+        ))
 
 
 @dataclass(frozen=True)
@@ -267,6 +305,16 @@ def momentum_volume_strategy_spec(top_n: int, momentum_weight: Decimal = Decimal
                         json.dumps({"top_n": top_n, "momentum_weight": str(momentum_weight)}, sort_keys=True, separators=(",", ":")))
 
 
+def kdj_manual_strategy_spec(top_n: int) -> StrategySpec:
+    return StrategySpec("kdj_manual_v1", "v1", KDJ_MANUAL_PROVIDER_TYPE,
+                        json.dumps({"top_n": top_n, "rule": "K>D AND K<80 AND J<100"}, sort_keys=True, separators=(",", ":")))
+
+
+def macd_manual_strategy_spec(top_n: int) -> StrategySpec:
+    return StrategySpec("macd_manual_v1", "v1", MACD_MANUAL_PROVIDER_TYPE,
+                        json.dumps({"top_n": top_n, "rule": "MACD>SIGNAL AND MACD>0 AND MACD>PREVIOUS_MACD"}, sort_keys=True, separators=(",", ":")))
+
+
 def resolve_score_provider(spec: StrategySpec) -> ScoreProvider:
     """Resolve only registered providers; unknown research specs fail closed."""
     if spec.provider_type == BASELINE_PROVIDER_TYPE:
@@ -275,6 +323,10 @@ def resolve_score_provider(spec: StrategySpec) -> ScoreProvider:
         return PureMomentumScoreProvider(spec)
     if spec.provider_type == MOMENTUM_VOLUME_PROVIDER_TYPE:
         return MomentumVolumeScoreProvider(spec)
+    if spec.provider_type == KDJ_MANUAL_PROVIDER_TYPE:
+        return KDJManualScoreProvider(spec)
+    if spec.provider_type == MACD_MANUAL_PROVIDER_TYPE:
+        return MACDManualScoreProvider(spec)
     if spec.provider_type == BULLDOZER_OVERNIGHT_PROVIDER_TYPE:
         return BulldozerOvernightScoreProvider(spec)
     if spec.provider_type == ML_RIDGE_PROVIDER_TYPE:

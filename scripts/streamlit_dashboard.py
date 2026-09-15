@@ -8,7 +8,8 @@ import altair as alt
 import duckdb
 import streamlit as st
 
-from quant_core.dashboard import load_activity, load_dashboard, load_monitoring_research, load_news_monitor, load_track_evaluations
+from quant_core.dashboard import (load_activity, load_dashboard, load_monitoring_research, load_news_monitor,
+                                  load_strategy_scorecards, load_track_evaluations)
 
 
 def _read(db_path: Path, account_id: str):
@@ -20,7 +21,8 @@ def _read_once(db_path: Path, account_id: str):
     connection = duckdb.connect(str(db_path), read_only=True)
     try:
         return (load_dashboard(connection, account_id), load_activity(connection, account_id),
-                load_monitoring_research(connection), load_news_monitor(connection), load_track_evaluations(connection))
+                load_monitoring_research(connection), load_news_monitor(connection), load_track_evaluations(connection),
+                load_strategy_scorecards(connection))
     finally:
         connection.close()
 
@@ -153,7 +155,7 @@ def main() -> None:
         st.caption("生产基线参与模拟撮合；影子策略仅作对照研究。")
 
     try:
-        data, activity, monitoring, news, track_evaluations = _read(db_path, account_id)
+        data, activity, monitoring, news, track_evaluations, scorecards = _read(db_path, account_id)
     except Exception as error:
         st.error(f"无法读取看板：{error}")
         return
@@ -329,6 +331,21 @@ def main() -> None:
         else:
             _empty("尚无拒单记录。")
     with strategy_tab:
+        st.subheader("Strategy Scorecard")
+        st.caption("仅在相同 Competition Profile 与阶段内横向比较；低样本和未完成记录会明确标识。")
+        if scorecards:
+            profile_options = sorted({f"{row['profile_id']} · {row['profile_version']} · {row['stage']}" for row in scorecards})
+            selected_profile = st.selectbox("Competition Profile", profile_options, key="scorecard_profile")
+            selected_rows = [row for row in scorecards if f"{row['profile_id']} · {row['profile_version']} · {row['stage']}" == selected_profile]
+            st.dataframe([{
+                "策略": row["strategy_id"], "版本": row["strategy_version"], "样本状态": row["sample_status"],
+                "交易": row["trade_count"], "收益": _percent(row["total_return"]), "超额": _percent(row["excess_return"]),
+                "胜率": _percent(row["win_rate"]), "Expectancy": _percent(row["expectancy"]),
+                "PF": row["profit_factor"], "Sharpe": row["sharpe"], "最大回撤": _percent(row["max_drawdown"]),
+                "成交率": _percent(row["fill_rate"]), "区间": f"{row['sample_start']} ~ {row['sample_end']}",
+            } for row in selected_rows], hide_index=True, width="stretch")
+        else:
+            _empty("尚无 Scorecard；完成研究实验后生成 Scorecard 即会显示。")
         st.subheader("冻结推荐")
         st.caption("策略推荐是全局输出，不等同于当前账户的自动交易指令。生产基线可进入模拟撮合；影子轨不会创建订单。")
         if data["recommendations"]:

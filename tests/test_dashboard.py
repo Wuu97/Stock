@@ -4,7 +4,8 @@ from pathlib import Path
 
 import duckdb
 
-from quant_core.dashboard import _is_historical_account, _recursive_kdj, load_activity, load_dashboard, load_monitoring_research, load_news_monitor
+from quant_core.dashboard import (_is_historical_account, _recursive_kdj, load_activity, load_dashboard,
+                                  load_monitoring_research, load_news_monitor, load_strategy_scorecards)
 from quant_core.news import NewsArchive, NewsDocument
 from quant_core.news_clustering import cluster_documents
 from quant_core.news_text import store_text_extraction
@@ -32,6 +33,23 @@ def test_dashboard_reads_account_and_position_without_mutating_state():
     assert data["positions"][0]["security_name"] == "浦发银行"
     assert data["positions"][0]["unrealized_return"] is None
     assert data["summary"] == {"cash": 9000.0, "market_value": 0.0, "equity": 9000.0, "max_drawdown": 0.0}
+
+
+def test_scorecard_dashboard_rows_are_read_only_and_expose_sample_status():
+    connection = duckdb.connect(":memory:")
+    connection.execute(Path("sql/schema.sql").read_text())
+    now = datetime(2026, 9, 14, tzinfo=timezone.utc)
+    connection.execute("INSERT INTO competition_profiles VALUES ('p', 'v1', '{}', 'hash', ?)", [now])
+    connection.execute("INSERT INTO sim_accounts VALUES ('a', 'a', 'CNY', 1, 'r', 'fifo', 'ACTIVE', ?)", [now])
+    connection.execute("INSERT INTO strategy_experiments VALUES ('e', 'a', '{}', 'cfg', ?)", [now])
+    connection.execute("INSERT INTO strategy_scorecards VALUES ('s', 'kdj_manual_v1', 'v1', 'p', 'v1', 'BACKTEST', '2026-01-01', '2026-02-01', ?, 'method', 'cfg', 'e', NULL, '{\"trade_count\":7,\"sharpe\":1.2}', 'metrics', 'LOW_SAMPLE', ?)", [now, now])
+    assert load_strategy_scorecards(connection) == [{
+        "strategy_id": "kdj_manual_v1", "strategy_version": "v1", "profile_id": "p", "profile_version": "v1",
+        "stage": "BACKTEST", "sample_start": "2026-01-01", "sample_end": "2026-02-01", "sample_status": "LOW_SAMPLE",
+        "trade_count": 7, "total_return": None, "excess_return": None, "win_rate": None, "expectancy": None,
+        "profit_factor": None, "sharpe": 1.2, "max_drawdown": None, "fill_rate": None,
+        "positive_month_ratio": None, "rolling_sharpe_std": None,
+    }]
 
 
 def test_dashboard_marks_replay_accounts_as_historical_and_forward_accounts_as_live_views():

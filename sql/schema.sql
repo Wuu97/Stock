@@ -633,6 +633,43 @@ CREATE TABLE IF NOT EXISTS strategy_experiment_results (
     created_at TIMESTAMPTZ NOT NULL
 );
 
+-- Immutable, strategy-neutral conditions under which strategy versions can be compared.
+CREATE TABLE IF NOT EXISTS competition_profiles (
+    competition_profile_id VARCHAR NOT NULL,
+    competition_profile_version VARCHAR NOT NULL,
+    profile_json VARCHAR NOT NULL,
+    profile_sha256 VARCHAR NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (competition_profile_id, competition_profile_version)
+);
+
+-- Append-only scorecard snapshots.  A stage is deliberately never blended with another stage.
+CREATE TABLE IF NOT EXISTS strategy_scorecards (
+    scorecard_id VARCHAR PRIMARY KEY,
+    strategy_id VARCHAR NOT NULL,
+    strategy_version VARCHAR NOT NULL,
+    competition_profile_id VARCHAR NOT NULL,
+    competition_profile_version VARCHAR NOT NULL,
+    evaluation_stage VARCHAR NOT NULL CHECK (evaluation_stage IN ('BACKTEST', 'SHADOW', 'PRODUCTION_SIM')),
+    sample_start DATE NOT NULL,
+    sample_end DATE NOT NULL,
+    as_of_time TIMESTAMPTZ NOT NULL,
+    evaluation_method_version VARCHAR NOT NULL,
+    config_sha256 VARCHAR NOT NULL,
+    source_experiment_id VARCHAR REFERENCES strategy_experiments(experiment_id),
+    source_run_id VARCHAR REFERENCES recommendation_runs(run_id),
+    metrics_json VARCHAR NOT NULL,
+    metrics_sha256 VARCHAR NOT NULL,
+    sample_status VARCHAR NOT NULL CHECK (sample_status IN ('SUFFICIENT', 'LOW_SAMPLE', 'INCOMPLETE', 'INVALID')),
+    created_at TIMESTAMPTZ NOT NULL,
+    FOREIGN KEY (competition_profile_id, competition_profile_version)
+        REFERENCES competition_profiles(competition_profile_id, competition_profile_version),
+    CHECK (sample_start <= sample_end),
+    CHECK ((source_experiment_id IS NOT NULL) <> (source_run_id IS NOT NULL)),
+    UNIQUE (source_experiment_id, evaluation_method_version),
+    UNIQUE (source_run_id, evaluation_method_version)
+);
+
 CREATE TABLE IF NOT EXISTS news_documents (
     document_id VARCHAR PRIMARY KEY,
     source_channel VARCHAR NOT NULL,

@@ -20,7 +20,9 @@ from quant_core.models import FeeModel
 from quant_core.portfolio import PortfolioPolicy
 from quant_core.risk import ExitRule, SignalDecayExitRule, VolatilityAdjustedExitRule
 from quant_core.settlement import SettlementService
-from quant_core.strategy_research import baseline_strategy_spec, momentum_volume_strategy_spec, pure_momentum_strategy_spec
+from quant_core.strategy_research import (baseline_strategy_spec, kdj_manual_strategy_spec, macd_manual_strategy_spec,
+                                          momentum_volume_strategy_spec, pure_momentum_strategy_spec)
+from quant_core.strategy_scorecard import StrategyScorecardStore, profile_from_experiment
 from quant_core.trading_status import TradingStatusStore
 from quant_core.universe import UniverseService
 
@@ -43,7 +45,7 @@ def main() -> None:
     parser.add_argument("--initial-cash", default="1000000")
     parser.add_argument("--volume-multiple", default="1.0")
     parser.add_argument("--top-n", type=int, default=5)
-    parser.add_argument("--strategy", choices=("baseline", "pure_momentum", "momentum_volume"), default="baseline")
+    parser.add_argument("--strategy", choices=("baseline", "pure_momentum", "momentum_volume", "kdj_manual", "macd_manual"), default="baseline")
     parser.add_argument("--momentum-weight", default="0.7")
     parser.add_argument("--portfolio-method", choices=("fixed_shares", "equal_weight"), default="fixed_shares")
     parser.add_argument("--shares-per-order", type=int, default=100)
@@ -56,7 +58,11 @@ def main() -> None:
     parser.add_argument("--signal-decay-return-threshold", default="-0.03")
     parser.add_argument("--signal-decay-min-holding-days", type=int, default=5)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--competition-profile-id")
+    parser.add_argument("--competition-profile-version")
     args = parser.parse_args()
+    if bool(args.competition_profile_id) != bool(args.competition_profile_version):
+        parser.error("--competition-profile-id and --competition-profile-version must be supplied together")
 
     start, end = date.fromisoformat(args.start_date), date.fromisoformat(args.end_date)
     volume_multiple, reserve = Decimal(args.volume_multiple), Decimal(args.cash_reserve)
@@ -69,6 +75,8 @@ def main() -> None:
         "baseline": lambda: baseline_strategy_spec(volume_multiple, args.top_n),
         "pure_momentum": lambda: pure_momentum_strategy_spec(args.top_n),
         "momentum_volume": lambda: momentum_volume_strategy_spec(args.top_n, Decimal(args.momentum_weight)),
+        "kdj_manual": lambda: kdj_manual_strategy_spec(args.top_n),
+        "macd_manual": lambda: macd_manual_strategy_spec(args.top_n),
     }[args.strategy])()
     rule = _exit_rule(args)
     open_gap_policy = OpenGapPolicy(Decimal(args.max_open_gap_up), Decimal(args.max_open_gap_down))
@@ -105,6 +113,7 @@ def main() -> None:
         spec = ExperimentSpec(strategy, policy, rule, fee.version, start, end, tuple(snapshot_ids),
                               universe_reference, args.benchmark_ticker, benchmark_reference, initial_cash, open_gap_policy)
         now, experiment_id = datetime.now(timezone.utc), str(uuid4())
+        scorecard_id = None
         try:
             SettlementService(connection).create_account(args.account_id, f"Experiment {experiment_id[:8]}", initial_cash, start)
             store = ExperimentStore(connection)
@@ -116,16 +125,22 @@ def main() -> None:
             metrics = calculate_metrics(connection, args.account_id,
                                         benchmark_bars or [bar for bar in bars if bar.ticker == args.benchmark_ticker])
             store.store_result(experiment_id, metrics, datetime.now(timezone.utc))
+            if args.competition_profile_id:
+                scorecard_id = StrategyScorecardStore(connection).store_experiment_scorecard(
+                    experiment_id,
+                    profile_from_experiment(args.competition_profile_id, args.competition_profile_version, spec),
+                    "BACKTEST", datetime.now(timezone.utc),
+                )
         except Exception:
             _discard_failed_experiment(connection, args.account_id)
             raise
     finally:
         connection.close()
-    report = {"experiment_id": experiment_id, "spec": json.loads(spec.canonical_json()), "replay": replay, "metrics": metrics}
+    report = {"experiment_id": experiment_id, "scorecard_id": scorecard_id, "spec": json.loads(spec.canonical_json()), "replay": replay, "metrics": metrics}
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, ensure_ascii=False, sort_keys=True, default=str, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({"experiment_id": experiment_id, "output": str(output)}, ensure_ascii=False))
+    print(json.dumps({"experiment_id": experiment_id, "scorecard_id": scorecard_id, "output": str(output)}, ensure_ascii=False))
 
 
 def _discard_failed_experiment(connection, account_id: str) -> None:

@@ -10,7 +10,7 @@ from .daily_risk import create_exit_intents
 from .bulldozer import BulldozerConfig, build_bulldozer_features_by_day
 from .bulldozer_exit import (ensure_bulldozer_exit_schema, reconcile_mandatory_exit_plans,
                              schedule_mandatory_exits_for_new_lots)
-from .features import FeatureRow
+from .features import FeatureRow, _technical_values
 from .matching import OpenGapPolicy
 from .models import DayBar, FeeModel, OrderIntent
 from .portfolio import PortfolioPolicy, construct_buys
@@ -193,22 +193,23 @@ def _build_feature_rows_by_day(bars: Sequence[DayBar], calendar: Sequence[date],
         for bar in bars_by_day.get(as_of_date, ()):
             history = histories.setdefault(bar.ticker, [])
             history.append(bar)
-            if len(history) > lookback_days:
-                del history[0]
         rows = []
         for ticker, history in histories.items():
             if len(history) != lookback_days:
-                continue
-            closes = [bar.close for bar in history]
-            volumes = [bar.volume for bar in history]
+                if len(history) < lookback_days:
+                    continue
+            window = history[-lookback_days:]
+            closes = [bar.close for bar in window]
+            volumes = [bar.volume for bar in window]
             average_volume = Decimal(sum(volumes)) / lookback_days
             rows.append(FeatureRow(
-                ticker=ticker, as_of_trade_date=as_of_date, close=history[-1].close,
+                ticker=ticker, as_of_trade_date=as_of_date, close=window[-1].close,
                 sma=sum(closes, Decimal("0")) / lookback_days, average_volume=average_volume,
-                momentum=(history[-1].close / history[0].close) - Decimal("1"),
+                momentum=(window[-1].close / window[0].close) - Decimal("1"),
                 volume_ratio=Decimal(history[-1].volume) / average_volume if average_volume else Decimal("0"),
-                momentum_5d=((history[-1].close / history[-6].close) - Decimal("1")
+                momentum_5d=((window[-1].close / window[-6].close) - Decimal("1")
                               if lookback_days >= 6 else Decimal("0")),
+                **_technical_values(history),
             ))
         rows_by_day[as_of_date] = rows
     return rows_by_day

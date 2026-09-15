@@ -3,11 +3,12 @@ from decimal import Decimal
 
 import pytest
 
-from quant_core.features import build_features
+from quant_core.features import FeatureRow, build_features
 from quant_core.models import DayBar
 from quant_core.strategy_research import (BaselineScoreProvider, StrategySpec, baseline_strategy_spec,
                                           bulldozer_overnight_daily_proxy_spec, momentum_volume_strategy_spec,
-                                          pure_momentum_strategy_spec, resolve_score_provider)
+                                          pure_momentum_strategy_spec, kdj_manual_strategy_spec,
+                                          macd_manual_strategy_spec, resolve_score_provider)
 from quant_core.bulldozer import BulldozerConfig, build_bulldozer_features
 
 
@@ -61,3 +62,14 @@ def test_bulldozer_daily_proxy_keeps_only_explicit_ma5_rule_and_records_gaps():
         "reason_code": "REALTIME_FIVE_LEVEL_ORDER_BOOK_UNAVAILABLE",
         "effect": "NOT_USED_FOR_SELECTION_OR_ENTRY_OR_EXIT",
     }
+
+
+def test_manual_kdj_and_macd_controls_are_frozen_research_strategies():
+    as_of = date(2026, 1, 31)
+    features = [FeatureRow("600000.SH", as_of, Decimal("10"), Decimal("10"), Decimal("100"), Decimal("0"), Decimal("1"),
+                           macd=Decimal("1"), macd_signal=Decimal(".5"), previous_macd=Decimal(".8"),
+                           kdj_k=Decimal("60"), kdj_d=Decimal("50"), kdj_j=Decimal("80"))]
+    kdj = resolve_score_provider(kdj_manual_strategy_spec(1)).score(features, as_of)
+    macd = resolve_score_provider(macd_manual_strategy_spec(1)).score(features, as_of)
+    assert kdj.recommendations[0].reasons["rule"] == "K>D AND K<80 AND J<100"
+    assert macd.recommendations[0].reasons["rule"] == "MACD>SIGNAL AND MACD>0 AND MACD>PREVIOUS_MACD"

@@ -484,6 +484,37 @@ def load_track_evaluations(connection, limit: int = 20) -> list:
     return [dict(zip(fields, (_display(value) for value in row))) for row in rows]
 
 
+def load_strategy_scorecards(connection) -> list:
+    """Read the latest scorecard per strategy/profile/stage without blending tracks."""
+    rows = connection.execute("""
+        WITH ranked AS (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY strategy_id, strategy_version, competition_profile_id,
+                             competition_profile_version, evaluation_stage, sample_start, sample_end
+                ORDER BY as_of_time DESC, created_at DESC
+            ) AS row_no
+            FROM strategy_scorecards
+        )
+        SELECT strategy_id, strategy_version, competition_profile_id, competition_profile_version,
+               evaluation_stage, sample_start, sample_end, sample_status, metrics_json
+        FROM ranked WHERE row_no = 1
+        ORDER BY competition_profile_id, competition_profile_version, evaluation_stage, strategy_id
+    """).fetchall()
+    result = []
+    for strategy_id, version, profile_id, profile_version, stage, start, end, status, metrics_json in rows:
+        metrics = json.loads(metrics_json)
+        result.append({
+            "strategy_id": strategy_id, "strategy_version": version, "profile_id": profile_id,
+            "profile_version": profile_version, "stage": stage, "sample_start": str(start),
+            "sample_end": str(end), "sample_status": status,
+            **{key: _number(metrics.get(key)) for key in (
+                "trade_count", "total_return", "excess_return", "win_rate", "expectancy", "profit_factor",
+                "sharpe", "max_drawdown", "fill_rate", "positive_month_ratio", "rolling_sharpe_std",
+            )},
+        })
+    return result
+
+
 def load_news_monitor(connection, limit: int = 50) -> dict:
     """Return archived news and gated event hypotheses for the read-only monitor."""
     if limit <= 0:
