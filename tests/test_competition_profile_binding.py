@@ -52,7 +52,7 @@ def test_strategy_specs_do_not_enter_profile_and_are_distinct_identities():
 def test_method_specific_portfolio_validation_and_hash():
     target=_replay(); target["portfolio"]={"method":"FIXED_TARGET_NOTIONAL","max_positions":5,"cash_reserve":"0","target_notional_per_position":"200000","lot_size":100,"rounding":"FLOOR","insufficient_for_one_lot":"SKIP","no_leverage":True,"sizing_price_basis":"DECISION_CLOSE","actual_execution_notional_may_differ_due_to_next_open":True}
     assert semantic_hash(_profile(replay=target)) != semantic_hash(_profile())
-    for field in ("target_notional_per_position","lot_size","rounding","insufficient_for_one_lot","no_leverage"):
+    for field in ("target_notional_per_position","lot_size","rounding","insufficient_for_one_lot","no_leverage","sizing_price_basis","actual_execution_notional_may_differ_due_to_next_open"):
         bad=copy.deepcopy(target); bad["portfolio"].pop(field)
         with pytest.raises(ValueError): _profile(replay=bad)
     bad=copy.deepcopy(target); bad["portfolio"]["shares_per_order"]=None
@@ -60,6 +60,10 @@ def test_method_specific_portfolio_validation_and_hash():
     bad=_replay(); bad["portfolio"].pop("shares_per_order")
     with pytest.raises(ValueError): _profile(replay=bad)
     bad=_replay(); bad["portfolio"]["method"]="UNKNOWN"
+    with pytest.raises(ValueError): _profile(replay=bad)
+    bad=copy.deepcopy(target); bad["portfolio"]["sizing_price_basis"]="NEXT_OPEN"
+    with pytest.raises(ValueError): _profile(replay=bad)
+    bad=copy.deepcopy(target); bad["portfolio"]["actual_execution_notional_may_differ_due_to_next_open"]=False
     with pytest.raises(ValueError): _profile(replay=bad)
 
 def test_stage_isolation_and_schema_initialization_is_idempotent(tmp_path):
