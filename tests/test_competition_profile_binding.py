@@ -50,7 +50,7 @@ def test_strategy_specs_do_not_enter_profile_and_are_distinct_identities():
     assert len({(s.strategy_id,s.strategy_version) for s in specs})==4
 
 def test_method_specific_portfolio_validation_and_hash():
-    target=_replay(); target["portfolio"]={"method":"FIXED_TARGET_NOTIONAL","max_positions":5,"cash_reserve":"0","target_notional_per_position":"200000","lot_size":100,"rounding":"FLOOR","insufficient_for_one_lot":"SKIP","no_leverage":True}
+    target=_replay(); target["portfolio"]={"method":"FIXED_TARGET_NOTIONAL","max_positions":5,"cash_reserve":"0","target_notional_per_position":"200000","lot_size":100,"rounding":"FLOOR","insufficient_for_one_lot":"SKIP","no_leverage":True,"sizing_price_basis":"DECISION_CLOSE","actual_execution_notional_may_differ_due_to_next_open":True}
     assert semantic_hash(_profile(replay=target)) != semantic_hash(_profile())
     for field in ("target_notional_per_position","lot_size","rounding","insufficient_for_one_lot","no_leverage"):
         bad=copy.deepcopy(target); bad["portfolio"].pop(field)

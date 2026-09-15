@@ -62,9 +62,9 @@ def complete_profile(universe, market, benchmark, replay, methodology):
         if "shares_per_order" not in portfolio or portfolio["shares_per_order"] is None or "target_notional_per_position" in portfolio: raise ValueError("invalid fixed-shares portfolio binding")
         lot=portfolio["shares_per_order"]
     elif method=="FIXED_TARGET_NOTIONAL":
-        fields={"target_notional_per_position","lot_size","rounding","insufficient_for_one_lot","no_leverage"}
+        fields={"target_notional_per_position","lot_size","rounding","insufficient_for_one_lot","no_leverage","sizing_price_basis","actual_execution_notional_may_differ_due_to_next_open"}
         if fields-set(portfolio) or "shares_per_order" in portfolio: raise ValueError("invalid fixed-target-notional portfolio binding")
-        if float(portfolio["target_notional_per_position"])<=0 or portfolio["rounding"] not in {"FLOOR"} or portfolio["insufficient_for_one_lot"] not in {"SKIP"} or not isinstance(portfolio["no_leverage"],bool) or not portfolio["no_leverage"]: raise ValueError("invalid fixed-target-notional semantics")
+        if float(portfolio["target_notional_per_position"])<=0 or portfolio["rounding"] not in {"FLOOR"} or portfolio["insufficient_for_one_lot"] not in {"SKIP"} or portfolio["sizing_price_basis"] not in {"DECISION_CLOSE"} or not isinstance(portfolio["no_leverage"],bool) or not portfolio["no_leverage"] or not isinstance(portfolio["actual_execution_notional_may_differ_due_to_next_open"],bool) or not portfolio["actual_execution_notional_may_differ_due_to_next_open"]: raise ValueError("invalid fixed-target-notional semantics")
         lot=portfolio["lot_size"]
     else: raise ValueError("invalid portfolio method")
     if int(replay["candidate_top_n"])<1 or int(lot)<100 or int(lot)%100: raise ValueError("invalid replay sizing")

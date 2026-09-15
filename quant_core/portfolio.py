@@ -65,11 +65,13 @@ def construct_buys(recommendations: Iterable[Recommendation], policy: PortfolioP
         return tuple(PlannedBuy(item.ticker, policy.board_lot, _estimated_buy_cash(item.close, policy.board_lot, fee)) for item in selected)
     if policy.method == "FIXED_TARGET_NOTIONAL":
         planned = []
+        remaining_cash = available_cash
         for item in selected:
             shares = int((policy.target_notional_per_position / item.close / policy.board_lot).to_integral_value(rounding=ROUND_DOWN)) * policy.board_lot
             estimated = _estimated_buy_cash(item.close, shares, fee) if shares else Decimal("0")
-            if shares and estimated <= available_cash:
+            if shares and estimated <= remaining_cash:
                 planned.append(PlannedBuy(item.ticker, shares, estimated))
+                remaining_cash -= estimated
         return tuple(planned)
     if not selected:
         return ()
