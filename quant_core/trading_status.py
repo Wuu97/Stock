@@ -55,6 +55,16 @@ class TradingStatusStore:
             result.setdefault(trade_date, set()).add(ticker)
         return result
 
+    def suspended_tickers_by_snapshot_ids(self, snapshot_ids, start_date: date, end_date: date) -> dict[date, set[str]]:
+        """Read exactly the frozen evidence set; never all snapshots of a source."""
+        ids = sorted(snapshot_ids)
+        if not ids: raise ValueError("frozen trading-status snapshot set is empty")
+        placeholders = ",".join("?" for _ in ids)
+        rows = self.connection.execute("SELECT trade_date,ticker FROM trading_status_events WHERE trading_status_snapshot_id IN (" + placeholders + ") AND status_code='SUSPENDED' AND trade_date BETWEEN ? AND ? ORDER BY 1,2", [*ids, start_date, end_date]).fetchall()
+        result = {}
+        for day, ticker in rows: result.setdefault(day, set()).add(ticker)
+        return result
+
 
 def _daily_status_events(events: Iterable[TradingStatusEvent]) -> tuple[TradingStatusEvent, ...]:
     """Collapse intraday duplicate records conservatively for a daily-bar model."""

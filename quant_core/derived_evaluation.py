@@ -49,6 +49,18 @@ def benchmark_binding_identity(profile):
     return binding["identifier"], version, binding["dataset_hash"]
 
 
+def canonical_universe_group(reference):
+    """Normalize the only persisted experiment alias for a PIT universe group."""
+    if not isinstance(reference, str) or not reference:
+        raise ValueError("source experiment universe reference is invalid")
+    if reference.startswith("PIT_GROUP:"):
+        group = reference.removeprefix("PIT_GROUP:")
+        if not group or ":" in group:
+            raise ValueError("source experiment PIT universe reference is invalid")
+        return group
+    return reference
+
+
 def validate_replay(connection, account_id, start, end, *, experiment_id=None, profile=None, strategy=None):
     """Validate account/experiment/strategy/NAV/calendar/binding lineage; fail closed."""
     spec = None
@@ -65,7 +77,7 @@ def validate_replay(connection, account_id, start, end, *, experiment_id=None, p
         market, universe = profile.get("market_data_binding", {}), profile.get("universe_binding", {})
         if market.get("date_range") and list(map(str, market["date_range"])) != [str(start), str(end)]: raise ValueError("market binding sample range mismatch")
         if universe.get("date_range") and list(map(str, universe["date_range"])) != [str(start), str(end)]: raise ValueError("universe binding sample range mismatch")
-        if spec and universe.get("group_id") and universe["group_id"] != spec["universe_reference"]: raise ValueError("source experiment/universe lineage mismatch")
+        if spec and universe.get("group_id") and universe["group_id"] != canonical_universe_group(spec["universe_reference"]): raise ValueError("source experiment/universe lineage mismatch")
         if market.get("source"):
             # A source can publish several immutable snapshots for one trading
             # day; calendar coverage is about dates, not snapshot cardinality.

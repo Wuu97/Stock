@@ -6,7 +6,7 @@ import json
 import pytest
 
 from quant_core.derived_evaluation import (DerivedEvaluationRunner, execution_fingerprint,
-                                           validate_replay, benchmark_binding_identity)
+                                           validate_replay, benchmark_binding_identity, canonical_universe_group)
 from quant_core.experiments import BenchmarkClose
 from tests.test_strategy_scorecard import _fixture
 
@@ -63,6 +63,13 @@ def test_fingerprint_excludes_benchmark_but_includes_execution_fields():
     source = _payload(); benchmark_only = _payload('other'); execution_change = _payload(replay='changed')
     assert execution_fingerprint(source, strategy) == execution_fingerprint(benchmark_only, strategy)
     assert execution_fingerprint(source, strategy) != execution_fingerprint(execution_change, strategy)
+
+
+def test_pit_universe_reference_has_one_strict_canonical_compatibility_rule():
+    assert canonical_universe_group('PIT_GROUP:historical_current_cap_momentum_v1_3y') == 'historical_current_cap_momentum_v1_3y'
+    assert canonical_universe_group('historical_current_cap_momentum_v1_3y') == 'historical_current_cap_momentum_v1_3y'
+    with pytest.raises(ValueError, match='PIT universe'):
+        canonical_universe_group('PIT_GROUP:')
 
 
 def test_normalized_v3_benchmark_binding_is_strict_about_identifier_version_and_hash():
