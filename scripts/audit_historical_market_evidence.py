@@ -12,7 +12,7 @@ from quant_core.historical_market_evidence import canonical_daily_evidence
 from quant_core.snapshots import canonical_hash
 
 
-SOURCE = "tushare_oos2020_history_daily_v1"
+DEFAULT_SOURCE = "tushare_oos2020_history_daily_v1"
 
 
 def _calendar_days(path: Path, start: date, end: date) -> list[date]:
@@ -52,23 +52,29 @@ def main() -> None:
     parser.add_argument("--start-date", required=True)
     parser.add_argument("--end-date", required=True)
     parser.add_argument("--minimum-execution-market-cap", default="80000000000")
+    parser.add_argument("--source", default=DEFAULT_SOURCE)
+    parser.add_argument("--market-snapshot-prefix", default="oos2020_tushare_market_")
+    parser.add_argument("--cap-snapshot-prefix", default="oos2020_tushare_cap_")
     args = parser.parse_args()
     start, end = date.fromisoformat(args.start_date), date.fromisoformat(args.end_date)
+    if not args.source.startswith("tushare_oos") or args.source == "tushare_history_daily":
+        raise ValueError("source must be a dedicated OOS evidence source")
     expected_days = _calendar_days(Path(args.calendar_reference), start, end)
     if not expected_days:
         raise ValueError("no frozen trading dates are in scope")
     minimum = Decimal(args.minimum_execution_market_cap)
     rebuilt_bars = rebuilt_caps = 0
+    prior_execution_tickers = set()
     with read_connection(args.db) as connection:
         rows = connection.execute(
             "SELECT market_snapshot_id,trade_date,manifest_path,manifest_sha256 FROM market_data_snapshots "
             "WHERE source_channel=? AND trade_date BETWEEN ? AND ? ORDER BY trade_date,market_snapshot_id",
-            [SOURCE, start, end],
+            [args.source, start, end],
         ).fetchall()
         if len(rows) != len(expected_days) or [row[1] for row in rows] != expected_days:
             raise ValueError("market snapshot dates do not exactly match frozen calendar coverage")
         for snapshot_id, trade_date, manifest_path, manifest_hash in rows:
-            expected_id = f"oos2020_tushare_market_{trade_date:%Y%m%d}"
+            expected_id = f"{args.market_snapshot_prefix}{trade_date:%Y%m%d}"
             if snapshot_id != expected_id:
                 raise ValueError(f"unexpected snapshot id for {trade_date}")
             evidence = _manifest_raw(Path(manifest_path), manifest_hash)
@@ -79,7 +85,7 @@ def main() -> None:
             responses = evidence.get("responses", {})
             bars, caps, canonical = canonical_daily_evidence(
                 trade_date, responses.get("daily", []), responses.get("daily_basic", []),
-                responses.get("adj_factor", []), responses.get("stk_limit", []), minimum,
+                responses.get("adj_factor", []), responses.get("stk_limit", []), minimum, prior_execution_tickers,
             )
             if canonical != evidence:
                 raise ValueError(f"raw evidence is not canonical for {trade_date}")
@@ -93,7 +99,7 @@ def main() -> None:
                            for ticker, open_, high, low, close, volume, amount, up, down, status in database_bars}
             if _bar_rows(bars) != actual_bars or len(bars) != len(database_bars):
                 raise ValueError(f"normalized daily bars differ from raw evidence for {trade_date}")
-            cap_id = f"oos2020_tushare_cap_{trade_date:%Y%m%d}"
+            cap_id = f"{args.cap_snapshot_prefix}{trade_date:%Y%m%d}"
             database_caps = connection.execute(
                 "SELECT ticker,total_market_cap FROM market_cap_values WHERE market_cap_snapshot_id=?", [cap_id],
             ).fetchall()
@@ -101,10 +107,11 @@ def main() -> None:
             if caps != actual_caps or len(caps) != len(database_caps):
                 raise ValueError(f"normalized market caps differ from raw evidence for {trade_date}")
             rebuilt_bars += len(bars); rebuilt_caps += len(caps)
+            prior_execution_tickers.update(ticker for ticker, cap in caps.items() if cap >= minimum)
         universes = connection.execute(
             "SELECT count(*) FROM universe_snapshots WHERE as_of_trade_date BETWEEN ? AND ?", [start, end],
         ).fetchone()[0]
-    print(json.dumps({"source": SOURCE, "calendar_days": len(expected_days), "snapshot_coverage": "PASS",
+    print(json.dumps({"source": args.source, "calendar_days": len(expected_days), "snapshot_coverage": "PASS",
                       "raw_artifact_integrity": "PASS", "raw_to_normalized_bars": "PASS",
                       "raw_to_normalized_market_caps": "PASS", "rebuilt_bars": rebuilt_bars,
                       "rebuilt_market_caps": rebuilt_caps, "universe_snapshots_created": universes}, ensure_ascii=False))

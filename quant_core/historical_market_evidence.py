@@ -50,7 +50,8 @@ def _positive_decimal(row: Mapping, field: str, endpoint: str) -> Decimal:
 
 def canonical_daily_evidence(trade_date: date, daily_all: list[dict], basic_all: list[dict],
                              factors_all: list[dict], limits_all: list[dict],
-                             minimum_execution_market_cap: Decimal = Decimal("80000000000")) -> tuple[list[DayBar], dict[str, Decimal], dict]:
+                             minimum_execution_market_cap: Decimal = Decimal("80000000000"),
+                             prior_execution_tickers: Iterable[str] = ()) -> tuple[list[DayBar], dict[str, Decimal], dict]:
     """Fail closed on incomplete per-day provider joins and build normalized facts.
 
     The raw endpoint payloads remain in the returned evidence bundle.  Normalized
@@ -64,9 +65,14 @@ def canonical_daily_evidence(trade_date: date, daily_all: list[dict], basic_all:
     if not daily:
         raise ValueError(f"Tushare daily has no in-scope mainland A-share rows for {trade_date}")
     tickers = {str(row["ts_code"]) for row in daily}
+    basic_by_ticker = {str(row["ts_code"]): Decimal(str(row["total_mv"])) * Decimal("10000")
+                       for row in basic_all if str(row["ts_code"]) in tickers}
+    execution_limit_tickers = ({ticker for ticker, cap in basic_by_ticker.items()
+                                if cap >= minimum_execution_market_cap}
+                               | (set(prior_execution_tickers) & tickers))
     for endpoint, records in (("daily_basic", basic_all), ("adj_factor", factors_all), ("stk_limit", limits_all)):
         available = {str(row["ts_code"]) for row in records if is_mainland_a_share(str(row["ts_code"]))}
-        missing = sorted(tickers - available)
+        missing = sorted((execution_limit_tickers if endpoint == "stk_limit" else tickers) - available)
         if missing:
             raise ValueError(f"Tushare {endpoint} is incomplete for {len(missing)} daily tickers on {trade_date}: {missing[:10]}")
     for row in daily:
@@ -100,8 +106,9 @@ def canonical_daily_evidence(trade_date: date, daily_all: list[dict], basic_all:
         "evidence_version": "historical_market_evidence_v1",
         "request_identity": {"provider": "tushare", "trade_date": trade_date.isoformat(),
                              "endpoints": ["daily", "daily_basic", "adj_factor", "stk_limit"]},
-        "coverage_contract": {"price_limits_required_for": "all_mainland_a_share_daily_bars",
+        "coverage_contract": {"price_limits_required_for": "current_or_prior_execution_candidate_domain",
                               "minimum_execution_market_cap": str(minimum_execution_market_cap),
+                              "prior_execution_ticker_count": len(set(prior_execution_tickers)),
                               "adjustment_factor_required_for": "all_mainland_a_share_daily_bars",
                               "adjustment_factor_contract": "raw_ohlcv_and_adj_factor_are_frozen_together; execution uses raw trade-date prices"},
         "responses": {"daily": daily_all, "daily_basic": basic_all, "adj_factor": factors_all, "stk_limit": limits_all},

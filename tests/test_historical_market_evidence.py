@@ -41,11 +41,13 @@ def test_market_evidence_rejects_duplicate_provider_key():
         canonical_daily_evidence(date(2020, 1, 2), _daily() * 2, _basic(), _factor(), _limit())
 
 
-def test_price_limit_coverage_is_required_for_all_tradeable_bars_not_just_new_candidates():
+def test_price_limit_coverage_is_required_for_current_and_prior_execution_domain():
     _, _, evidence = canonical_daily_evidence(date(2020, 1, 2), _daily(), _basic(), _factor(), _limit())
-    assert evidence["coverage_contract"]["price_limits_required_for"] == "all_mainland_a_share_daily_bars"
+    assert evidence["coverage_contract"]["price_limits_required_for"] == "current_or_prior_execution_candidate_domain"
+    canonical_daily_evidence(date(2020, 1, 2), _daily(), _basic(), _factor(), [])
     with pytest.raises(ValueError, match="stk_limit is incomplete"):
-        canonical_daily_evidence(date(2020, 1, 2), _daily(), _basic(), _factor(), [])
+        canonical_daily_evidence(date(2020, 1, 2), _daily(), _basic(total_mv="8000000"), _factor(), [],
+                                 prior_execution_tickers=["000001.SZ"])
 
 
 @pytest.mark.parametrize("endpoint,row,error", [
