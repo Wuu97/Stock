@@ -25,6 +25,7 @@ def test_dataset_uses_exact_fifth_trading_day_and_excludes_immature_tail():
     rows = build_cross_sectional_dataset(bars, calendar, universe, adjusted, benchmark, calendar[0], calendar[-1])
     assert [row.trade_date for row in rows] == calendar[19:-5]
     assert rows[0].target_excess_ret_5d == pytest.approx((12.4 / 11.9 - 1) - (124 / 119 - 1))
+    assert rows[0].label_available_trade_date == calendar[24]
 
 
 def test_adjusted_label_ignores_a_raw_ex_right_price_gap():
@@ -57,6 +58,7 @@ def test_missing_future_stock_price_is_retained_as_an_untradeable_outcome():
     row = build_cross_sectional_dataset(bars, calendar, universe, adjusted, benchmark, calendar[0], calendar[-1])[0]
     assert row.target_excess_ret_5d is None
     assert row.label_status == "UNTRADEABLE_OUTCOME"
+    assert row.label_available_trade_date is None
 
 
 def test_cross_section_features_do_not_depend_on_future_prices():

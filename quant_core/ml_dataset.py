@@ -30,6 +30,7 @@ class DatasetRow:
     momentum_20d_zscore: float
     target_excess_ret_5d: Optional[float]
     label_status: str
+    label_available_trade_date: Optional[date]
 
     def as_dict(self) -> dict:
         return asdict(self) | {"trade_date": self.trade_date.isoformat()}
@@ -100,6 +101,9 @@ def build_cross_sectional_dataset(
                 "volume_ratio_20d": float(Decimal(volumes[-1]) / average_volume) if average_volume else 0.0,
                 "target_excess_ret_5d": float(((adjusted_end / adjusted_start) - Decimal("1")) - benchmark_return) if adjusted_end else None,
                 "label_status": "MATURE" if adjusted_end else "UNTRADEABLE_OUTCOME",
+                # A T+5 outcome is not observable at its decision close.  This
+                # date is the causal boundary every trainer must enforce.
+                "label_available_trade_date": future_date if adjusted_end else None,
             })
         percentile, zscore = _cross_section_statistics([row["momentum_20d"] for row in raw_rows])
         rows.extend(DatasetRow(trade_date=trade_date, momentum_20d_percentile=percentile[index],

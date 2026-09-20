@@ -28,11 +28,26 @@ def walk_forward_ridge(rows: Iterable[Mapping], train_window_days: int = 480, te
                    key=lambda row: (row["trade_date"], row["ticker"]))
     dates = sorted({row["trade_date"] for row in frame})
     periods, daily = [], []
-    for start in range(train_window_days, len(dates), test_window_days):
-        train_start = 0 if window_policy == "expanding" else start - train_window_days
-        train_dates, test_dates = dates[train_start:start], dates[start:start + test_window_days]
+    first_start = None
+    for candidate in range(1, len(dates)):
+        cutoff = dates[candidate - 1]
+        eligible = [day for day in dates[:candidate] if all(
+            row.get("label_available_trade_date") is not None and row["label_available_trade_date"] <= cutoff
+            for row in frame if row["trade_date"] == day)]
+        if len(eligible) >= train_window_days:
+            first_start = candidate
+            break
+    if first_start is None:
+        raise ValueError("dataset does not contain enough causally mature dates for one walk-forward period")
+    for start in range(first_start, len(dates), test_window_days):
+        test_dates = dates[start:start + test_window_days]
         if not test_dates:
             continue
+        training_cutoff = dates[start - 1]
+        eligible = [day for day in dates[:start] if all(
+            row.get("label_available_trade_date") is not None and row["label_available_trade_date"] <= training_cutoff
+            for row in frame if row["trade_date"] == day)]
+        train_dates = eligible if window_policy == "expanding" else eligible[-train_window_days:]
         train = [row for row in frame if row["trade_date"] in train_dates]
         test = [dict(row) for row in frame if row["trade_date"] in test_dates]
         model = fit_ridge(train, ridge_alpha)
@@ -58,6 +73,7 @@ def walk_forward_ridge(rows: Iterable[Mapping], train_window_days: int = 480, te
             period_daily.append(item)
         periods.append({
             "train_dates": [str(train_dates[0]), str(train_dates[-1])],
+            "label_availability_cutoff_date": str(training_cutoff),
             "test_dates": [str(test_dates[0]), str(test_dates[-1])],
             "training_rows": len(train), "rank_ic_mean": _mean(row["rank_ic"] for row in period_daily),
             "model_top_excess_return_gross_mean": _mean(row["model_top_excess_return_gross"] for row in period_daily),

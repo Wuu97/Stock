@@ -11,7 +11,7 @@ from .derived_evaluation import execution_fingerprint, load_frozen_profile
 from .experiments import ExperimentSpec, ExperimentStore, calculate_metrics
 from .market_data import MarketDataStore
 from .settlement import SettlementService
-from .strategy_research import pure_momentum_strategy_spec, kdj_manual_strategy_spec, macd_manual_strategy_spec
+from .strategy_research import baseline_strategy_spec, pure_momentum_strategy_spec, kdj_manual_strategy_spec, macd_manual_strategy_spec
 from .trading_status import TradingStatusStore
 from .universe import UniverseService
 from .backtest import BacktestConfig, replay_daily_strategy
@@ -22,7 +22,12 @@ from .risk import ExitRule
 from .derived_evaluation import validate_benchmark_dates
 from .strategy_scorecard import StrategyScorecardStore
 
-_STRATEGIES={'pure_momentum_v1':pure_momentum_strategy_spec,'kdj_manual_v1':kdj_manual_strategy_spec,'macd_manual_v1':macd_manual_strategy_spec}
+_STRATEGIES={
+    'historical_momentum_v1': lambda top_n: baseline_strategy_spec(Decimal('1.5'), top_n),
+    'pure_momentum_v1': pure_momentum_strategy_spec,
+    'kdj_manual_v1': kdj_manual_strategy_spec,
+    'macd_manual_v1': macd_manual_strategy_spec,
+}
 NON_VOLUME_STRATEGY_MULTIPLIER=Decimal('1')  # ignored whenever an explicit non-baseline StrategySpec is supplied
 
 def _sell_only_stamp_rate(value):
@@ -43,23 +48,24 @@ def _cleanup_failed_run(connection, account_id, experiment_id):
     for table in ('sim_dividend_entitlements','sim_exit_signals','sim_suspension_valuation_events','sim_positions_daily','sim_nav_daily','sim_executions','sim_order_intents','sim_position_lots','ledger_journal_entries','sim_accounts'):
         connection.execute(f'DELETE FROM {table} WHERE account_id=?',[account_id])
 
-def preflight(connection, profile_id, profile_version, strategy_id):
-    if strategy_id not in _STRATEGIES: raise ValueError('unknown competition strategy')
+def preflight(connection, profile_id, profile_version, strategy_id, strategy=None):
+    if strategy is None and strategy_id not in _STRATEGIES: raise ValueError('unknown competition strategy')
     profile,digest=load_frozen_profile(connection,profile_id,profile_version)
     engine=profile.get('engine_binding'); market=profile['market_data_binding']; replay=profile['replay_assumptions']; universe=profile['universe_binding']
     start,end=map(__import__('datetime').date.fromisoformat,market['date_range'])
     validate_engine_binding(connection,engine,start,end)
     if market_binding(connection,market['source'],start,end)!=market: raise ValueError('frozen market binding evidence mismatch')
-    strategy=_STRATEGIES[strategy_id](int(replay['candidate_top_n']))
+    strategy=strategy or _STRATEGIES[strategy_id](int(replay['candidate_top_n']))
     snapshots=[r[0] for r in connection.execute('SELECT market_snapshot_id FROM market_data_snapshots WHERE source_channel=? AND trade_date BETWEEN ? AND ? ORDER BY trade_date,market_snapshot_id',[market['source'],start,end]).fetchall()]
     groups=UniverseService(connection).members_by_trade_date(universe['group_id'],start,end)
     if not groups: raise ValueError('frozen universe evidence is missing')
     return profile,digest,strategy,start,end,snapshots,groups
 
-def run(connection, *, account_id, profile_id, profile_version, strategy_id, benchmark_bars, created_at):
+def run(connection, *, account_id, profile_id, profile_version, strategy_id, benchmark_bars, created_at, strategy_spec=None, score_provider=None):
     """Execute only after frozen-profile preflight; StrategySpec is the sole variable."""
     if connection.execute('SELECT 1 FROM sim_accounts WHERE account_id=?',[account_id]).fetchone(): raise ValueError('competition account must be fresh')
-    profile,digest,strategy,start,end,snapshots,groups=preflight(connection,profile_id,profile_version,strategy_id)
+    profile,digest,strategy,start,end,snapshots,groups=(preflight(connection,profile_id,profile_version,strategy_id,strategy_spec)
+                                                        if strategy_spec is not None else preflight(connection,profile_id,profile_version,strategy_id))
     replay, engine=profile['replay_assumptions'],profile['engine_binding']; p=replay['portfolio']; fee=replay['fee_model']; ex=replay['exit_rule']; gap=replay['open_gap_gate']
     policy=PortfolioPolicy.fixed_target_notional(Decimal(p['target_notional_per_position']),int(p['max_positions']),int(p['lot_size']))
     costs=FeeModel(fee['version'],Decimal(fee['commission_rate']),Decimal(fee['minimum_commission']),_sell_only_stamp_rate(fee['stamp_duty_rate']),Decimal(fee['transfer_fee_rate']),Decimal(fee['slippage_rate']))
@@ -75,7 +81,7 @@ def run(connection, *, account_id, profile_id, profile_version, strategy_id, ben
         SettlementService(connection).create_account(account_id,'Competition '+eid[:8],Decimal(replay['initial_cash']),start)
         ExperimentStore(connection).create(eid,account_id,spec,created_at)
         connection.execute('INSERT INTO strategy_experiment_competition_lineage VALUES (?,?,?,?,?,?)',[eid,profile_id,profile_version,digest,fingerprint,created_at])
-        replay=replay_daily_strategy(connection,bars,days,BacktestConfig(account_id,start,end,int(p['lot_size']),int(engine['feature_lookback_days']),int(replay['candidate_top_n']),NON_VOLUME_STRATEGY_MULTIPLIER,strategy,policy,open_gap),costs,exits,universe_by_date=groups,suspended_tickers_by_date=status)
+        replay=replay_daily_strategy(connection,bars,days,BacktestConfig(account_id,start,end,int(p['lot_size']),int(engine['feature_lookback_days']),int(replay['candidate_top_n']),NON_VOLUME_STRATEGY_MULTIPLIER,strategy,policy,open_gap),costs,exits,universe_by_date=groups,score_provider=score_provider,suspended_tickers_by_date=status)
         metrics=calculate_metrics(connection,account_id,benchmark_bars); ExperimentStore(connection).store_result(eid,metrics,created_at)
         scorecard_id=StrategyScorecardStore(connection).store_frozen_experiment_scorecard(eid,profile_id,profile_version,created_at)
         return eid,scorecard_id,replay,metrics

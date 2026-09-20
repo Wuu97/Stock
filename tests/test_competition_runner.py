@@ -5,7 +5,7 @@ import pytest
 
 import quant_core.competition_runner as runner
 from quant_core.experiments import BenchmarkClose
-from quant_core.strategy_research import pure_momentum_strategy_spec
+from quant_core.strategy_research import baseline_strategy_spec, pure_momentum_strategy_spec
 from tests.test_strategy_scorecard import _fixture
 
 
@@ -39,3 +39,9 @@ def test_non_volume_multiplier_is_not_read_by_explicit_pure_strategy():
     assert spec.provider_type == 'PURE_MOMENTUM'
     assert 'volume_multiple' not in spec.parameters
     assert runner.NON_VOLUME_STRATEGY_MULTIPLIER == Decimal('1')
+
+
+def test_competition_runner_registers_the_existing_baseline_without_changing_its_rule():
+    spec = runner._STRATEGIES['historical_momentum_v1'](5)
+    assert spec == baseline_strategy_spec(Decimal('1.5'), 5)
+    assert spec.strategy_id == 'historical_momentum_v1'

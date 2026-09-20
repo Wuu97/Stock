@@ -15,7 +15,7 @@ from quant_core.database import writer_connection
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", required=True, help="PIT-safe Parquet output from build_dataset.py")
-    parser.add_argument("--train-end-date", required=True, help="Last labelled decision date allowed in training")
+    parser.add_argument("--train-end-date", required=True, help="Latest date on which every training label must already be observable")
     parser.add_argument("--output", required=True)
     parser.add_argument("--db", help="Optional DuckDB registry for the trained model artifact")
     parser.add_argument("--ridge-alpha", type=float, default=1.0)
@@ -30,7 +30,7 @@ def main() -> None:
     train_end = date.fromisoformat(args.train_end_date)
     connection = duckdb.connect(":memory:")
     try:
-        query = "SELECT * FROM read_parquet(?) WHERE label_status = 'MATURE' AND trade_date <= ? ORDER BY trade_date, ticker"
+        query = "SELECT * FROM read_parquet(?) WHERE label_status = 'MATURE' AND label_available_trade_date <= ? ORDER BY trade_date, ticker"
         cursor = connection.execute(query, [args.dataset, train_end])
         columns = [column[0] for column in cursor.description]
         rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
@@ -53,7 +53,7 @@ def main() -> None:
         "schema_version": MODEL_SCHEMA_VERSION,
         "model_type": "ridge_excess_return_v1",
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "trained_through_date": train_end.isoformat(),
+        "trained_through_date": train_end.isoformat(), "label_availability_cutoff_date": train_end.isoformat(),
         "training_rows": len(rows),
         "ridge_alpha": args.ridge_alpha,
         "feature_columns": list(FEATURE_COLUMNS),

@@ -89,14 +89,15 @@ def main() -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     writer = duckdb.connect(":memory:")
     try:
-        writer.execute("CREATE TABLE dataset AS SELECT * FROM (SELECT CAST(NULL AS DATE) trade_date, CAST(NULL AS VARCHAR) ticker, CAST(NULL AS DOUBLE) \"close\", CAST(NULL AS DOUBLE) momentum_5d, CAST(NULL AS DOUBLE) momentum_20d, CAST(NULL AS DOUBLE) sma20_deviation, CAST(NULL AS DOUBLE) volume_ratio_20d, CAST(NULL AS DOUBLE) momentum_20d_percentile, CAST(NULL AS DOUBLE) momentum_20d_zscore, CAST(NULL AS DOUBLE) target_excess_ret_5d, CAST(NULL AS VARCHAR) label_status) WHERE FALSE")
-        writer.executemany("INSERT INTO dataset VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [tuple(row.as_dict().values()) for row in rows])
+        writer.execute("CREATE TABLE dataset AS SELECT * FROM (SELECT CAST(NULL AS DATE) trade_date, CAST(NULL AS VARCHAR) ticker, CAST(NULL AS DOUBLE) \"close\", CAST(NULL AS DOUBLE) momentum_5d, CAST(NULL AS DOUBLE) momentum_20d, CAST(NULL AS DOUBLE) sma20_deviation, CAST(NULL AS DOUBLE) volume_ratio_20d, CAST(NULL AS DOUBLE) momentum_20d_percentile, CAST(NULL AS DOUBLE) momentum_20d_zscore, CAST(NULL AS DOUBLE) target_excess_ret_5d, CAST(NULL AS VARCHAR) label_status, CAST(NULL AS DATE) label_available_trade_date) WHERE FALSE")
+        writer.executemany("INSERT INTO dataset VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [tuple(row.as_dict().values()) for row in rows])
         writer.execute("COPY dataset TO '" + str(output).replace("'", "''") + "' (FORMAT PARQUET)")
     finally:
         writer.close()
     manifest = {
         "schema_version": "ml_dataset_v1", "label_price_basis": "SUPPLIER_ADJUSTED_CLOSE_V1",
-        "trading_days_forward": 5, "benchmark_symbol": args.benchmark, "group_name": args.group_name,
+        "trading_days_forward": 5, "label_availability_contract": "label_available_trade_date_is_t_plus_5_trading_day",
+        "benchmark_symbol": args.benchmark, "group_name": args.group_name,
         "rows": len(rows), "date_range": [args.start_date, args.end_date],
         "feature_columns": list(rows[0].as_dict().keys())[2:-2],
         "label_status_counts": {status: sum(row.label_status == status for row in rows) for status in sorted({row.label_status for row in rows})},

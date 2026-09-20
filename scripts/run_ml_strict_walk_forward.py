@@ -62,7 +62,19 @@ def main() -> None:
         benchmark_closes = _benchmark_closes(args.benchmark_csv) if args.market_regime_guard else {}
         rows = _dataset_rows(args.dataset)
         dates = sorted({row["trade_date"] for row in rows if row["label_status"] == "MATURE"})
-        windows = list(range(args.train_window_days, len(dates), args.test_window_days))
+        first_start = None
+        for candidate in range(1, len(dates)):
+            cutoff = dates[candidate - 1]
+            eligible = [day for day in dates[:candidate] if all(
+                row.get("label_available_trade_date") is not None and row["label_available_trade_date"] <= cutoff
+                for row in rows if row["trade_date"] == day and row["label_status"] == "MATURE"
+            )]
+            if len(eligible) >= args.train_window_days:
+                first_start = candidate
+                break
+        if first_start is None:
+            raise ValueError("dataset does not contain enough causally mature dates for one strict walk-forward period")
+        windows = list(range(first_start, len(dates), args.test_window_days))
         windows = windows[args.period_offset:]
         if args.max_periods is not None:
             windows = windows[:args.max_periods]
@@ -108,7 +120,7 @@ def main() -> None:
         bar_days = {bar.trade_date for bar in bars}
         periods = []
         for index in windows:
-            train_dates, test_dates = dates[index - args.train_window_days:index], dates[index:index + args.test_window_days]
+            test_dates = dates[index:index + args.test_window_days]
             if not test_dates:
                 continue
             missing = [day.isoformat() for day in test_dates if day not in strict_days]
@@ -119,12 +131,20 @@ def main() -> None:
             suspended_tickers_by_date = TradingStatusStore(connection).suspended_tickers_by_date(
                 args.trading_status_source_channel, test_dates[0], test_dates[-1]
             )
+            training_cutoff = dates[index - 1]
+            eligible = [day for day in dates[:index] if all(
+                row.get("label_available_trade_date") is not None and row["label_available_trade_date"] <= training_cutoff
+                for row in rows if row["trade_date"] == day and row["label_status"] == "MATURE"
+            )]
+            train_dates = eligible[-args.train_window_days:]
             train = [row for row in rows if row["trade_date"] in train_dates and row["label_status"] == "MATURE"]
             fitted = fit_ridge(train, 1.0)
             payload = json.dumps(fitted, default=float, sort_keys=True)
-            model = MLShadowModel(train_dates[-1], fitted["means"], fitted["scales"], fitted["coefficients"], fitted["intercept"], sha256(payload.encode()).hexdigest())
+            model = MLShadowModel(training_cutoff, fitted["means"], fitted["scales"], fitted["coefficients"], fitted["intercept"], sha256(payload.encode()).hexdigest())
             ml_spec = StrategySpec("ml_ridge_walk_forward_v1", "ridge_v1", "ML_RIDGE_EXCESS_RETURN", json.dumps({"top_n": args.top_n}))
-            period = {"train_dates": [str(train_dates[0]), str(train_dates[-1])], "test_dates": [str(test_dates[0]), str(test_dates[-1])], "model_sha256": model.artifact_sha256}
+            period = {"train_dates": [str(train_dates[0]), str(train_dates[-1])],
+                      "label_availability_cutoff_date": str(training_cutoff),
+                      "test_dates": [str(test_dates[0]), str(test_dates[-1])], "model_sha256": model.artifact_sha256}
             providers = [("ml", ml_spec, MLRidgeScoreProvider(ml_spec, model)),
                          ("baseline", baseline_strategy_spec(Decimal("1.5"), args.top_n), resolve_score_provider(baseline_strategy_spec(Decimal("1.5"), args.top_n)))]
             if args.market_regime_guard:
