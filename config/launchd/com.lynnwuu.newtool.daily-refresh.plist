@@ -5,6 +5,7 @@
   <key>Label</key><string>com.lynnwuu.newtool.daily-refresh</string>
   <key>ProgramArguments</key>
   <array><string>/bin/zsh</string><string>/Users/lynnwuu/Desktop/Gemini/stock/New_tool/scripts/run_local_daily_refresh.sh</string></array>
+  <key>WorkingDirectory</key><string>/Users/lynnwuu/Desktop/Gemini/stock/New_tool</string>
   <key>StartCalendarInterval</key>
   <array>
     <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>18</integer><key>Minute</key><integer>0</integer></dict>

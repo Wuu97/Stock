@@ -1,6 +1,6 @@
 """Point-in-time dynamic monitoring universes based on current market cap and past returns."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from decimal import Decimal
 import json
@@ -203,8 +203,12 @@ class UniverseService:
         values = self.connection.execute("SELECT ticker, total_market_cap FROM market_cap_values WHERE market_cap_snapshot_id = ?",
                                          [market_cap_snapshot_id]).fetchall()
         caps = {ticker: Decimal(str(cap)) for ticker, cap in values}
+        bars = tuple(bars)
         listing_dates, calendar_days = self._listing_inputs(as_of_trade_date, rule, listing_snapshot_id, trading_days)
         st_flags = self._st_flags(as_of_trade_date, rule, st_backfill_run_id)
+        self._require_pre_universe_st_coverage(
+            as_of_trade_date, rule, bars, caps, listing_dates, calendar_days, st_flags,
+        )
         members = (select_dynamic_universe(bars, caps, as_of_trade_date, rule, listing_dates, calendar_days, st_flags)
                    if isinstance(rule, DynamicUniverseRule)
                    else select_liquidity_universe(bars, caps, as_of_trade_date, rule, listing_dates, calendar_days, st_flags))
@@ -223,6 +227,38 @@ class UniverseService:
         if member_rows:
             self.connection.executemany("INSERT INTO universe_members VALUES (?, ?, ?, ?, ?)", member_rows)
         return snapshot_id
+
+    @staticmethod
+    def _pre_st_candidates(as_of_trade_date: date, rule: Union[DynamicUniverseRule, LiquidityUniverseRule],
+                           bars: Sequence[DayBar], caps: Mapping[str, Decimal],
+                           listing_dates: Optional[Mapping[str, date]],
+                           calendar_days: Optional[Sequence[date]]) -> set[str]:
+        """Return every candidate that would reach ST screening, before ranking truncation.
+
+        A historical ST backfill must prove an explicit TRUE/FALSE fact for the
+        whole pre-ST candidate domain, not only for the eventual Top-N members.
+        """
+        unrestricted = replace(rule, require_non_st=False, top_n=max(1, len(caps)))
+        members = (select_dynamic_universe(bars, caps, as_of_trade_date, unrestricted, listing_dates, calendar_days)
+                   if isinstance(rule, DynamicUniverseRule)
+                   else select_liquidity_universe(bars, caps, as_of_trade_date, unrestricted, listing_dates, calendar_days))
+        return {member.ticker for member in members}
+
+    def _require_pre_universe_st_coverage(self, as_of_trade_date: date,
+                                           rule: Union[DynamicUniverseRule, LiquidityUniverseRule],
+                                           bars: Sequence[DayBar], caps: Mapping[str, Decimal],
+                                           listing_dates: Optional[Mapping[str, date]],
+                                           calendar_days: Optional[Sequence[date]],
+                                           st_flags: Optional[Mapping[str, bool]]) -> None:
+        if not rule.require_non_st:
+            return
+        if st_flags is None:
+            raise ValueError("ST history is required for pre-universe coverage")
+        expected = self._pre_st_candidates(as_of_trade_date, rule, bars, caps, listing_dates, calendar_days)
+        missing = sorted(expected - set(st_flags))
+        if missing:
+            raise ValueError("ST coverage missing for pre-universe candidate domain on " +
+                             f"{as_of_trade_date}: " + ", ".join(missing))
 
     def _listing_inputs(self, as_of_trade_date: date, rule: Union[DynamicUniverseRule, LiquidityUniverseRule],
                         listing_snapshot_id: Optional[str], trading_days: Optional[Sequence[date]] = None

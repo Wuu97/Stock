@@ -112,6 +112,27 @@ def test_snapshot_retains_historical_listing_and_st_lineage():
     assert con.execute("SELECT listing_snapshot_id, st_backfill_run_id FROM universe_snapshots WHERE universe_snapshot_id=?", [snapshot_id]).fetchone() == ("listing_ref", "st_run")
 
 
+def test_historical_universe_requires_explicit_st_coverage_before_any_write():
+    con = duckdb.connect(":memory:")
+    con.execute(Path("sql/schema.sql").read_text())
+    service = UniverseService(con)
+    now, day = datetime.now(timezone.utc), date(2026, 8, 31)
+    service.store_market_caps("cap", now, "fixture", {"SAFE": Decimal("10"), "MISSING": Decimal("10")}, now)
+    con.execute("INSERT INTO security_listing_snapshots VALUES ('listing_ref', 'historical_listing_fact_reference_v1', 'x', 'h', ?, ?)", [now, now])
+    con.executemany("INSERT INTO security_listing_values VALUES ('listing_ref', ?, ?, NULL, 'L')",
+                    [(ticker, date(2026, 1, 1)) for ticker in ("SAFE", "MISSING")])
+    con.execute("INSERT INTO st_history_backfill_runs VALUES ('st_run', 'baostock', ?, ?, 'baostock_is_st_supplier_fact_v1', ?)", [date(2026, 1, 1), day, now])
+    con.execute("INSERT INTO st_history_daily VALUES ('st_run', 'SAFE', ?, false, 'x', 'h', ?)", [day, now])
+    days = [date(2026, 7, 1) + timedelta(days=index) for index in range(62)]
+    bars = [_bar(value, ticker, Decimal("10") + index) for ticker in ("SAFE", "MISSING")
+            for index, value in enumerate(days)]
+    rule = DynamicUniverseRule("historical", Decimal("1"), 30, 50, min_listing_trading_days=60, require_non_st=True)
+    with pytest.raises(ValueError, match="ST coverage missing for pre-universe candidate domain"):
+        service.create_snapshot("cap", day, rule, bars, now, listing_snapshot_id="listing_ref",
+                                st_backfill_run_id="st_run", trading_days=days)
+    assert con.execute("SELECT COUNT(*) FROM universe_snapshots").fetchone()[0] == 0
+
+
 def test_dynamic_universe_members_are_snapshotted_in_the_database():
     con = duckdb.connect(":memory:")
     con.execute(Path("sql/schema.sql").read_text())

@@ -112,14 +112,18 @@ def _account_tickers(db_path: str, account_ids: list[str]) -> list[str]:
     return sorted(set(rows))
 
 
-def _active_simulation_tickers(db_path: str) -> list[str]:
-    """Return every active paper-account symbol that must have an official close."""
+def _active_simulation_tickers(db_path: str, account_ids: list[str]) -> list[str]:
+    """Return symbols for explicitly configured operational accounts only."""
+    if not account_ids:
+        return []
     with read_connection(db_path) as connection:
+        placeholders = ",".join("?" for _ in account_ids)
         rows = connection.execute(
             "SELECT DISTINCT l.ticker FROM sim_position_lots l JOIN sim_accounts a ON a.account_id = l.account_id "
-            "WHERE a.account_status = 'ACTIVE' "
+            "WHERE a.account_status = 'ACTIVE' AND a.account_id IN (" + placeholders + ") "
             "UNION SELECT DISTINCT o.ticker FROM sim_order_intents o JOIN sim_accounts a ON a.account_id = o.account_id "
-            "WHERE a.account_status = 'ACTIVE' AND o.order_status = 'PENDING'"
+            "WHERE a.account_status = 'ACTIVE' AND a.account_id IN (" + placeholders + ") AND o.order_status = 'PENDING'",
+            [*account_ids, *account_ids],
         ).fetchall()
     return sorted(row[0] for row in rows)
 
@@ -280,7 +284,7 @@ def main() -> None:
     taxonomy_version, tracked_tickers = context["taxonomy_version"], context["tracked_tickers"]
     monitor_account_ids = _monitor_account_ids(ROOT / args.portfolio_monitor_config)
     monitored_tickers = _account_tickers(args.db, monitor_account_ids)
-    active_simulation_tickers = _active_simulation_tickers(args.db)
+    active_simulation_tickers = _active_simulation_tickers(args.db, sorted(set([args.account_id, *monitor_account_ids])))
 
     refresh_args = ["--db", args.db, "--trade-date", trade_date.isoformat(), "--group-name", args.group_name]
     for ticker in sorted(set([*tracked_tickers, *active_simulation_tickers])):

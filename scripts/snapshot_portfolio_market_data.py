@@ -22,7 +22,8 @@ def _held_tickers(connection):
     rows = connection.execute(
         "WITH disposed AS (SELECT lot_id, SUM(shares_deducted) AS shares FROM sim_lot_disposal_events GROUP BY lot_id) "
         "SELECT l.ticker, COALESCE(s.instrument_type, 'A_SHARE') "
-        "FROM sim_position_lots l LEFT JOIN security_master s ON s.ticker = l.ticker "
+        "FROM sim_position_lots l JOIN sim_accounts a ON a.account_id = l.account_id AND a.account_status = 'ACTIVE' "
+        "LEFT JOIN security_master s ON s.ticker = l.ticker "
         "LEFT JOIN disposed d ON d.lot_id = l.lot_id "
         "GROUP BY l.ticker, s.instrument_type HAVING SUM(l.orig_shares - COALESCE(d.shares, 0)) > 0 "
         "ORDER BY l.ticker"

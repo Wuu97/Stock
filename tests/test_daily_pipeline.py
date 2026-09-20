@@ -58,7 +58,7 @@ def test_monitor_accounts_contribute_held_and_pending_tickers(tmp_path):
     account_ids = _monitor_account_ids(config)
     assert account_ids == ["cash", "margin"]
     assert _account_tickers(str(db_path), account_ids) == ["000001.SZ", "600000.SH"]
-    assert _active_simulation_tickers(str(db_path)) == ["000001.SZ", "600000.SH"]
+    assert _active_simulation_tickers(str(db_path), account_ids) == ["000001.SZ", "600000.SH"]
 
 
 def test_cost_model_loader_uses_the_versioned_project_config():

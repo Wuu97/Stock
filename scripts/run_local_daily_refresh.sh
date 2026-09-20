@@ -1,8 +1,17 @@
 #!/bin/zsh
 set -euo pipefail
 
-ROOT="/Users/lynnwuu/Desktop/Gemini/stock/New_tool"
+ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd -P)"
 cd "$ROOT"
+
+if [[ ! -x "$ROOT/.venv/bin/python" ]]; then
+  print -u2 "daily refresh bootstrap failed: virtualenv python is missing at $ROOT/.venv/bin/python"
+  exit 127
+fi
+if [[ ! -f "$ROOT/scripts/run_configured_daily_pipeline.py" || ! -f "$ROOT/scripts/run_local_daily_refresh.py" ]]; then
+  print -u2 "daily refresh bootstrap failed: required runner script is missing under $ROOT/scripts"
+  exit 127
+fi
 
 # launchd starts with a minimal environment.  The argument profile is shared by
 # local automation and manual runs, preventing same-day audit-config drift.

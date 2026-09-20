@@ -16,18 +16,27 @@ SOURCE_CHANNEL = "baostock_is_st_history_v1"
 POLICY_VERSION = "baostock_is_st_supplier_fact_v1"
 
 
-def _run_id(start_date: date, end_date: date) -> str:
-    return "bst_" + uuid5(NAMESPACE_URL, f"{SOURCE_CHANNEL}:{POLICY_VERSION}:{start_date}:{end_date}").hex
+def _run_id(start_date: date, end_date: date, candidate_market_source: str, minimum_market_cap: str) -> str:
+    return "bst_" + uuid5(NAMESPACE_URL,
+                            f"{SOURCE_CHANNEL}:{POLICY_VERSION}:{start_date}:{end_date}:{candidate_market_source}:{minimum_market_cap}").hex
 
 
-def _candidate_tickers(db_path: str, run_id: str, start_date: date, end_date: date, limit: int) -> list[str]:
+def _candidate_tickers(db_path: str, run_id: str, candidate_market_source: str,
+                       minimum_market_cap: str, limit: int) -> list[str]:
+    """Only fetch ticker histories that entered the frozen PIT cap candidate domain.
+
+    This intentionally avoids claiming ST completeness for all A shares.  Later
+    pre-Universe coverage validation remains responsible for proving explicit
+    TRUE/FALSE facts for every actual candidate ticker/date pair.
+    """
     with read_connection(db_path) as connection:
         rows = connection.execute(
-            "SELECT DISTINCT ticker FROM daily_bars WHERE trade_date BETWEEN ? AND ? "
-            "AND (ticker LIKE '%.SH' OR ticker LIKE '%.SZ') EXCEPT "
+            "SELECT DISTINCT v.ticker FROM market_cap_values v JOIN market_cap_snapshots s "
+            "ON s.market_cap_snapshot_id=v.market_cap_snapshot_id "
+            "WHERE s.source_channel=? AND v.total_market_cap>=? AND (v.ticker LIKE '%.SH' OR v.ticker LIKE '%.SZ') EXCEPT "
             "SELECT ticker FROM st_history_backfill_state WHERE backfill_run_id = ? AND status = 'SUCCEEDED' "
             "ORDER BY ticker LIMIT ?",
-            [start_date, end_date, run_id, limit],
+            [candidate_market_source, minimum_market_cap, run_id, limit],
         ).fetchall()
     return [row[0] for row in rows if not row[0].startswith(("200", "900"))]
 
@@ -85,17 +94,21 @@ def main() -> None:
     parser.add_argument("--max-tickers", type=int, default=20)
     parser.add_argument("--sleep-seconds", type=float, default=0.25)
     parser.add_argument("--artifact-dir", default="data/st_history/baostock")
+    parser.add_argument("--candidate-market-source", required=True,
+                        help="Frozen market source whose PIT market caps define the ST collection ticker scope.")
+    parser.add_argument("--minimum-candidate-market-cap", default="80000000000")
     args = parser.parse_args()
     start_date, end_date = date.fromisoformat(args.start_date), date.fromisoformat(args.end_date)
     if start_date > end_date or args.max_tickers < 1 or args.sleep_seconds < 0:
         raise ValueError("invalid date range or batch configuration")
-    run_id = _run_id(start_date, end_date)
+    run_id = _run_id(start_date, end_date, args.candidate_market_source, args.minimum_candidate_market_cap)
     with writer_connection(args.db) as connection:
         connection.execute(
             "INSERT OR IGNORE INTO st_history_backfill_runs VALUES (?, ?, ?, ?, ?, ?)",
             [run_id, SOURCE_CHANNEL, start_date, end_date, POLICY_VERSION, datetime.now(timezone.utc)],
         )
-    tickers = _candidate_tickers(args.db, run_id, start_date, end_date, args.max_tickers)
+    tickers = _candidate_tickers(args.db, run_id, args.candidate_market_source,
+                                 args.minimum_candidate_market_cap, args.max_tickers)
     artifact_dir = Path(args.artifact_dir) / run_id
     artifact_dir.mkdir(parents=True, exist_ok=True)
     completed, failed = [], []
@@ -118,10 +131,11 @@ def main() -> None:
                 sleep(args.sleep_seconds)
     with read_connection(args.db) as connection:
         remaining = connection.execute(
-            "SELECT COUNT(*) FROM (SELECT DISTINCT ticker FROM daily_bars WHERE trade_date BETWEEN ? AND ? "
-            "AND (ticker LIKE '%.SH' OR ticker LIKE '%.SZ') EXCEPT "
+            "SELECT COUNT(*) FROM (SELECT DISTINCT v.ticker FROM market_cap_values v JOIN market_cap_snapshots s "
+            "ON s.market_cap_snapshot_id=v.market_cap_snapshot_id "
+            "WHERE s.source_channel=? AND v.total_market_cap>=? AND (v.ticker LIKE '%.SH' OR v.ticker LIKE '%.SZ') EXCEPT "
             "SELECT ticker FROM st_history_backfill_state WHERE backfill_run_id = ? AND status = 'SUCCEEDED')",
-            [start_date, end_date, run_id],
+            [args.candidate_market_source, args.minimum_candidate_market_cap, run_id],
         ).fetchone()[0]
     print(json.dumps({"backfill_run_id": run_id, "completed_tickers": len(completed), "failed_tickers": failed,
                       "remaining_tickers": remaining, "artifact_dir": str(artifact_dir)}, ensure_ascii=False))
