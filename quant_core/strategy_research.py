@@ -238,6 +238,28 @@ class MLRidgeScoreProvider:
 
 
 @dataclass(frozen=True)
+class FrozenPredictionArtifactScoreProvider:
+    """Consume immutable precomputed scores without invoking model inference."""
+    spec: StrategySpec
+    predictions: Mapping[tuple[date, str], float]
+
+    def score(self, features: Iterable[FeatureRow], as_of_trade_date: date) -> StrategyResult:
+        top_n = _positive_top_n(self.spec.parameters)
+        scored = []
+        for row in tuple(features):
+            key = (as_of_trade_date, row.ticker)
+            if key not in self.predictions:
+                raise ValueError(f"frozen prediction artifact is missing {as_of_trade_date} {row.ticker}")
+            scored.append((row, float(self.predictions[key])))
+        ranked = sorted(scored, key=lambda item: (-item[1], item[0].ticker))[:top_n]
+        return StrategyResult(self.spec, as_of_trade_date, tuple(
+            Recommendation(row.ticker, index, score, row.close, {
+                "provider": "FROZEN_PREDICTION_ARTIFACT", "prediction_trade_date": str(as_of_trade_date),
+            }) for index, (row, score) in enumerate(ranked, start=1)
+        ))
+
+
+@dataclass(frozen=True)
 class MLRidgeMarketGuardScoreProvider:
     """Fail closed on new ML entries unless the benchmark is in a risk-on trend.
 

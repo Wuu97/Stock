@@ -12,6 +12,9 @@ def main():
  with writer_connection(a.db) as c:
   parent,parent_hash=load_frozen_profile(c,a.parent_id,a.parent_version); payload=json.loads(json.dumps(parent))
   payload['market_data_binding']=market_binding(c,parent['market_data_binding']['source'],start,end)
+  warmup_days=[r[0] for r in c.execute("SELECT DISTINCT trade_date FROM market_data_snapshots WHERE source_channel=? AND trade_date < ? ORDER BY trade_date DESC LIMIT 20",[parent['market_data_binding']['source'],start]).fetchall()]
+  if len(warmup_days)!=20: raise ValueError('cannot freeze a 20-trading-day feature warmup')
+  payload['feature_warmup_market_binding']=market_binding(c,parent['market_data_binding']['source'],min(warmup_days),max(warmup_days))
   payload['universe_binding']=universe_binding(c,parent['universe_binding']['group_id'],start,end,a.calendar_path)
   payload['benchmark_binding']['date_range']=[str(start),str(end)]; payload['benchmark_binding']['observation_count']=60
   payload['parent_profile']={'id':a.parent_id,'version':a.parent_version,'hash':parent_hash}

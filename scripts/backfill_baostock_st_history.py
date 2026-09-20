@@ -6,6 +6,7 @@ from hashlib import sha256
 import json
 from pathlib import Path
 from time import sleep
+from typing import Optional
 from uuid import uuid5, NAMESPACE_URL
 
 from quant_core.baostock_st_source import fetch_is_st, session
@@ -22,7 +23,8 @@ def _run_id(start_date: date, end_date: date, candidate_market_source: str, mini
 
 
 def _candidate_tickers(db_path: str, run_id: str, candidate_market_source: str,
-                       minimum_market_cap: str, limit: int) -> list[str]:
+                       minimum_market_cap: str, limit: int,
+                       candidate_start: Optional[date] = None, candidate_end: Optional[date] = None) -> list[str]:
     """Only fetch ticker histories that entered the frozen PIT cap candidate domain.
 
     This intentionally avoids claiming ST completeness for all A shares.  Later
@@ -30,13 +32,18 @@ def _candidate_tickers(db_path: str, run_id: str, candidate_market_source: str,
     TRUE/FALSE facts for every actual candidate ticker/date pair.
     """
     with read_connection(db_path) as connection:
+        date_clause = ""
+        params = [candidate_market_source, minimum_market_cap]
+        if candidate_start is not None and candidate_end is not None:
+            date_clause = " AND s.market_cap_snapshot_id IN (SELECT 'oos2020_tushare_cap_' || replace(CAST(trade_date AS VARCHAR), '-', '') FROM market_data_snapshots WHERE source_channel=? AND trade_date BETWEEN ? AND ?)"
+            params.extend([candidate_market_source, candidate_start, candidate_end])
         rows = connection.execute(
             "SELECT DISTINCT v.ticker FROM market_cap_values v JOIN market_cap_snapshots s "
             "ON s.market_cap_snapshot_id=v.market_cap_snapshot_id "
-            "WHERE s.source_channel=? AND v.total_market_cap>=? AND (v.ticker LIKE '%.SH' OR v.ticker LIKE '%.SZ') EXCEPT "
+            "WHERE s.source_channel=? AND v.total_market_cap>=? AND (v.ticker LIKE '%.SH' OR v.ticker LIKE '%.SZ')" + date_clause + " EXCEPT "
             "SELECT ticker FROM st_history_backfill_state WHERE backfill_run_id = ? AND status = 'SUCCEEDED' "
             "ORDER BY ticker LIMIT ?",
-            [candidate_market_source, minimum_market_cap, run_id, limit],
+            params + [run_id, limit],
         ).fetchall()
     return [row[0] for row in rows if not row[0].startswith(("200", "900"))]
 
@@ -134,8 +141,14 @@ def main() -> None:
     parser.add_argument("--candidate-market-source", required=True,
                         help="Frozen market source whose PIT market caps define the ST collection ticker scope.")
     parser.add_argument("--minimum-candidate-market-cap", default="80000000000")
+    parser.add_argument("--candidate-start-date")
+    parser.add_argument("--candidate-end-date")
     args = parser.parse_args()
     start_date, end_date = date.fromisoformat(args.start_date), date.fromisoformat(args.end_date)
+    candidate_start = date.fromisoformat(args.candidate_start_date) if args.candidate_start_date else None
+    candidate_end = date.fromisoformat(args.candidate_end_date) if args.candidate_end_date else None
+    if (candidate_start is None) != (candidate_end is None) or candidate_start and candidate_start > candidate_end:
+        raise ValueError("candidate date bounds must be supplied together and ordered")
     if start_date > end_date or args.max_tickers < 1 or args.sleep_seconds < 0:
         raise ValueError("invalid date range or batch configuration")
     run_id = _run_id(start_date, end_date, args.candidate_market_source, args.minimum_candidate_market_cap)
@@ -145,7 +158,8 @@ def main() -> None:
             [run_id, SOURCE_CHANNEL, start_date, end_date, POLICY_VERSION, datetime.now(timezone.utc)],
         )
     tickers = _candidate_tickers(args.db, run_id, args.candidate_market_source,
-                                 args.minimum_candidate_market_cap, args.max_tickers)
+                                 args.minimum_candidate_market_cap, args.max_tickers,
+                                 candidate_start, candidate_end)
     artifact_dir = Path(args.artifact_dir) / run_id
     artifact_dir.mkdir(parents=True, exist_ok=True)
     completed, failed = [], []

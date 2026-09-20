@@ -55,16 +55,24 @@ def preflight(connection, profile_id, profile_version, strategy_id, strategy=Non
     start,end=map(__import__('datetime').date.fromisoformat,market['date_range'])
     validate_engine_binding(connection,engine,start,end)
     if market_binding(connection,market['source'],start,end)!=market: raise ValueError('frozen market binding evidence mismatch')
+    warmup=profile.get('feature_warmup_market_binding')
+    warmup_snapshots=[]
+    if warmup is not None:
+        warmup_start,warmup_end=map(__import__('datetime').date.fromisoformat,warmup['date_range'])
+        if warmup_end >= start or market_binding(connection,warmup['source'],warmup_start,warmup_end)!=warmup:
+            raise ValueError('frozen feature warmup binding evidence mismatch')
+        warmup_snapshots=[r[0] for r in connection.execute('SELECT market_snapshot_id FROM market_data_snapshots WHERE source_channel=? AND trade_date BETWEEN ? AND ? ORDER BY trade_date,market_snapshot_id',[warmup['source'],warmup_start,warmup_end]).fetchall()]
+        if len({r[1] for r in connection.execute('SELECT market_snapshot_id,trade_date FROM market_data_snapshots WHERE market_snapshot_id IN ('+','.join('?' for _ in warmup_snapshots)+')',warmup_snapshots).fetchall()}) < int(engine['feature_lookback_days']): raise ValueError('frozen feature warmup is shorter than engine lookback')
     strategy=strategy or _STRATEGIES[strategy_id](int(replay['candidate_top_n']))
     snapshots=[r[0] for r in connection.execute('SELECT market_snapshot_id FROM market_data_snapshots WHERE source_channel=? AND trade_date BETWEEN ? AND ? ORDER BY trade_date,market_snapshot_id',[market['source'],start,end]).fetchall()]
     groups=UniverseService(connection).members_by_trade_date(universe['group_id'],start,end)
     if not groups: raise ValueError('frozen universe evidence is missing')
-    return profile,digest,strategy,start,end,snapshots,groups
+    return profile,digest,strategy,start,end,[*warmup_snapshots,*snapshots],snapshots,groups
 
 def run(connection, *, account_id, profile_id, profile_version, strategy_id, benchmark_bars, created_at, strategy_spec=None, score_provider=None):
     """Execute only after frozen-profile preflight; StrategySpec is the sole variable."""
     if connection.execute('SELECT 1 FROM sim_accounts WHERE account_id=?',[account_id]).fetchone(): raise ValueError('competition account must be fresh')
-    profile,digest,strategy,start,end,snapshots,groups=(preflight(connection,profile_id,profile_version,strategy_id,strategy_spec)
+    profile,digest,strategy,start,end,feature_snapshots,snapshots,groups=(preflight(connection,profile_id,profile_version,strategy_id,strategy_spec)
                                                         if strategy_spec is not None else preflight(connection,profile_id,profile_version,strategy_id))
     replay, engine=profile['replay_assumptions'],profile['engine_binding']; p=replay['portfolio']; fee=replay['fee_model']; ex=replay['exit_rule']; gap=replay['open_gap_gate']
     policy=PortfolioPolicy.fixed_target_notional(Decimal(p['target_notional_per_position']),int(p['max_positions']),int(p['lot_size']))
@@ -72,8 +80,8 @@ def run(connection, *, account_id, profile_id, profile_version, strategy_id, ben
     exits=ExitRule(Decimal(ex['stop_loss_rate']),Decimal(ex['take_profit_min_rate']),Decimal(ex['trailing_drawdown_rate']),int(ex['max_holding_days']))
     open_gap=OpenGapPolicy(Decimal(gap['max_gap_up']),Decimal(gap['max_gap_down']))
     status=TradingStatusStore(connection).suspended_tickers_by_snapshot_ids(engine['trading_status_snapshot_ids'],start,end)
-    tickers=set().union(*groups.values()); bars=MarketDataStore(connection).load_bars_many_for_tickers(snapshots,tickers)
-    days=sorted({b.trade_date for b in bars}); validate_benchmark_dates(benchmark_bars,days)
+    tickers=set().union(*groups.values()); bars=MarketDataStore(connection).load_bars_many_for_tickers(feature_snapshots,tickers)
+    days=sorted({r[0] for r in connection.execute('SELECT DISTINCT trade_date FROM market_data_snapshots WHERE market_snapshot_id IN ('+','.join('?' for _ in snapshots)+') ORDER BY 1',snapshots).fetchall()}); validate_benchmark_dates(benchmark_bars,days)
     spec=ExperimentSpec(strategy,policy,exits,costs.version,start,end,tuple(snapshots),'PIT_GROUP:'+profile['universe_binding']['group_id'],profile['benchmark_binding']['identifier'],'NORMALIZED_DATASET_SHA256:'+profile['benchmark_binding']['dataset_hash'],Decimal(replay['initial_cash']),open_gap)
     fingerprint=execution_fingerprint(profile,strategy.__dict__)
     eid=str(uuid4())

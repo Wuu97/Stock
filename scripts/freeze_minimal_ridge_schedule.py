@@ -1,7 +1,7 @@
 """Freeze the first causally eligible 480/60 Ridge schedule from an immutable dataset."""
 
 import argparse
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -29,6 +29,8 @@ def main() -> None:
     parser.add_argument("--train-window-days", type=int, default=480)
     parser.add_argument("--test-window-days", type=int, default=60)
     parser.add_argument("--ridge-alpha", type=float, default=1.0)
+    parser.add_argument("--prediction-start-date", help="Require this verified first prediction date instead of choosing the earliest.")
+    parser.add_argument("--prediction-end-date", help="Optional execution end beyond mature label dates for the final OOS segment.")
     args = parser.parse_args()
     if args.train_window_days < 1 or args.test_window_days < 1 or args.ridge_alpha < 0:
         raise ValueError("invalid Ridge schedule parameters")
@@ -61,12 +63,25 @@ def main() -> None:
                   if len([day for day in dates[:index] if all(row["label_available_trade_date"] <= dates[index - 1] for row in by_day[day])]) >= args.train_window_days), None)
     if start is None:
         raise ValueError("no causally eligible 480-day training and 60-day prediction window")
+    if args.prediction_start_date:
+        requested = date.fromisoformat(args.prediction_start_date)
+        if dates[start] != requested:
+            matching = [index for index in range(1, len(dates))
+                        if dates[index] == requested]
+            if not matching:
+                raise ValueError("requested prediction start is absent from the frozen dataset")
+            start = matching[0]
+            cutoff = dates[start - 1]
+            eligible = [day for day in dates[:start] if all(row["label_available_trade_date"] <= cutoff for row in by_day[day])]
+            if len(eligible) < args.train_window_days:
+                raise ValueError("requested prediction start lacks a causally mature 480-day training window")
     cutoff = dates[start - 1]
     eligible = [day for day in dates[:start] if all(row["label_available_trade_date"] <= cutoff for row in by_day[day])]
     train_dates = eligible[-args.train_window_days:]
     test_dates = dates[start:start + args.test_window_days]
+    prediction_end = date.fromisoformat(args.prediction_end_date) if args.prediction_end_date else test_dates[-1]
     train = [row for day in train_dates for row in by_day[day]]
-    if len(train_dates) != args.train_window_days or len(test_dates) != args.test_window_days:
+    if len(train_dates) != args.train_window_days or (len(test_dates) != args.test_window_days and not args.prediction_start_date):
         raise ValueError("frozen Ridge schedule is not a complete 480/60 window")
     fitted = fit_ridge(train, args.ridge_alpha)
     payload = {
@@ -89,7 +104,7 @@ def main() -> None:
         "models": [{"model_path": str(model_path), "model_sha256": _sha(model_path),
                     "training_decision_dates": payload["training_decision_dates"],
                     "label_availability_cutoff_date": cutoff.isoformat(),
-                    "prediction_dates": [test_dates[0].isoformat(), test_dates[-1].isoformat()]}],
+                    "prediction_dates": [test_dates[0].isoformat(), prediction_end.isoformat()]}],
     }
     schedule_path.parent.mkdir(parents=True, exist_ok=True)
     schedule_path.write_text(json.dumps(schedule, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")

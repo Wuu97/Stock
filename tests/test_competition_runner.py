@@ -11,7 +11,7 @@ from tests.test_strategy_scorecard import _fixture
 
 def _preflight(connection, profile_id, profile_version, strategy_id):
     profile={"universe_binding":{"group_id":"fixture"},"market_data_binding":{},"benchmark_binding":{"identifier":"BENCH","dataset_hash":"hash"},"engine_binding":{"feature_lookback_days":20,"trading_status_snapshot_ids":["s"]},"replay_assumptions":{"initial_cash":"1000","candidate_top_n":5,"portfolio":{"target_notional_per_position":"200","max_positions":5,"lot_size":100},"fee_model":{"version":"cost","commission_rate":"0","minimum_commission":"0","stamp_duty_rate":"0.0005_sell_only","transfer_fee_rate":"0","slippage_rate":"0"},"exit_rule":{"stop_loss_rate":"0.10","take_profit_min_rate":"0.15","trailing_drawdown_rate":"0.05","max_holding_days":60},"open_gap_gate":{"max_gap_up":"0.03","max_gap_down":"-0.04"}}}
-    return profile,'profile-hash',pure_momentum_strategy_spec(5),date(2026,9,1),date(2026,9,3),['snapshot'],{date(2026,9,d):{'AAA'} for d in (1,2,3)}
+    return profile,'profile-hash',pure_momentum_strategy_spec(5),date(2026,9,1),date(2026,9,3),['snapshot'],['snapshot'],{date(2026,9,d):{'AAA'} for d in (1,2,3)}
 
 
 @pytest.mark.parametrize('stage', ['replay','metrics','scorecard'])
