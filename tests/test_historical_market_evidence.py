@@ -41,8 +41,19 @@ def test_market_evidence_rejects_duplicate_provider_key():
         canonical_daily_evidence(date(2020, 1, 2), _daily() * 2, _basic(), _factor(), _limit())
 
 
-def test_price_limit_coverage_is_required_for_execution_candidate_domain_only():
-    _, _, evidence = canonical_daily_evidence(date(2020, 1, 2), _daily(), _basic(), _factor(), [])
-    assert evidence["coverage_contract"]["price_limits_required_for"] == "current_market_cap_at_or_above_threshold"
+def test_price_limit_coverage_is_required_for_all_tradeable_bars_not_just_new_candidates():
+    _, _, evidence = canonical_daily_evidence(date(2020, 1, 2), _daily(), _basic(), _factor(), _limit())
+    assert evidence["coverage_contract"]["price_limits_required_for"] == "all_mainland_a_share_daily_bars"
     with pytest.raises(ValueError, match="stk_limit is incomplete"):
-        canonical_daily_evidence(date(2020, 1, 2), _daily(), _basic(total_mv="8000000"), _factor(), [])
+        canonical_daily_evidence(date(2020, 1, 2), _daily(), _basic(), _factor(), [])
+
+
+@pytest.mark.parametrize("endpoint,row,error", [
+    ("factor", {"ts_code": "000001.SZ", "trade_date": "20200102", "adj_factor": "0"}, "invalid adj_factor"),
+    ("limit", {"ts_code": "000001.SZ", "trade_date": "20200102", "up_limit": "9", "down_limit": "10"}, "up_limit below"),
+])
+def test_market_evidence_rejects_invalid_execution_numbers(endpoint, row, error):
+    inputs = {"basic": _basic(), "factor": _factor(), "limit": _limit()}
+    inputs[endpoint] = [row]
+    with pytest.raises(ValueError, match=error):
+        canonical_daily_evidence(date(2020, 1, 2), _daily(), inputs["basic"], inputs["factor"], inputs["limit"])

@@ -19,8 +19,11 @@ def main() -> None:
     parser.add_argument("--end-date", required=True)
     parser.add_argument("--listing-snapshot-id", required=True)
     parser.add_argument("--st-backfill-run-id", required=True)
+    parser.add_argument("--market-source", default="tushare_oos2020_history_daily_v1")
     args = parser.parse_args()
     start, end = date.fromisoformat(args.start_date), date.fromisoformat(args.end_date)
+    if args.market_source == "tushare_history_daily" or not args.market_source.startswith("tushare_oos"):
+        raise ValueError("market-source must be a frozen OOS evidence source")
     with read_connection(args.db) as connection:
         snapshots = _rows(connection, """
             SELECT universe_snapshot_id, as_of_trade_date, rule_version, rule_json, listing_snapshot_id, st_backfill_run_id
@@ -37,7 +40,7 @@ def main() -> None:
             WHERE u.group_name=? AND u.as_of_trade_date BETWEEN ? AND ? AND c.total_market_cap >= 80000000000
         """, [args.group_name, start, end])[0][0]
         listing_unknown, listing_under_60 = _rows(connection, """
-            WITH calendar AS (SELECT DISTINCT trade_date FROM market_data_snapshots WHERE source_channel='tushare_history_daily'),
+            WITH calendar AS (SELECT DISTINCT trade_date FROM market_data_snapshots WHERE source_channel=?),
             candidates AS (
               SELECT u.as_of_trade_date, c.ticker FROM universe_snapshots u JOIN market_cap_values c
               ON c.market_cap_snapshot_id=u.market_cap_snapshot_id
@@ -48,7 +51,7 @@ def main() -> None:
               LEFT JOIN calendar cal ON cal.trade_date BETWEEN l.list_date AND x.as_of_trade_date
               GROUP BY 1,2,3
             ) SELECT COUNT(*) FILTER (WHERE list_date IS NULL), COUNT(*) FILTER (WHERE list_date IS NOT NULL AND age_days < 60) FROM age
-        """, [args.group_name, start, end, args.listing_snapshot_id])[0]
+        """, [args.market_source, args.group_name, start, end, args.listing_snapshot_id])[0]
         st_true, st_unknown = _rows(connection, """
             WITH candidates AS (
               SELECT u.as_of_trade_date, c.ticker FROM universe_snapshots u JOIN market_cap_values c
@@ -65,10 +68,10 @@ def main() -> None:
             ), bars AS (
               SELECT c.as_of_trade_date, c.ticker, COUNT(b.trade_date) AS n FROM candidates c
               LEFT JOIN (daily_bars b JOIN market_data_snapshots s
-                ON s.market_snapshot_id=b.market_snapshot_id AND s.source_channel='tushare_history_daily')
+                ON s.market_snapshot_id=b.market_snapshot_id AND s.source_channel=?)
               ON b.ticker=c.ticker AND b.trade_date<=c.as_of_trade_date AND b.status='TRADING' GROUP BY 1,2
             ) SELECT COUNT(*) FROM bars WHERE n < 31
-        """, [args.group_name, start, end])[0][0]
+        """, [args.market_source, args.group_name, start, end])[0][0]
     if not snapshots:
         raise ValueError("no snapshots found for requested group/date range")
     expected_rule = {"minimum_total_market_cap": "80000000000", "momentum_window_days": 30,
@@ -77,7 +80,7 @@ def main() -> None:
     semantic_ok = all(row[2] == "current_cap_momentum_v1" and json.loads(row[3]) == expected_rule
                       and row[4] == args.listing_snapshot_id and row[5] == args.st_backfill_run_id for row in snapshots)
     counts = [row[1] for row in member_counts]
-    print(json.dumps({
+    result = {
         "group_name": args.group_name, "date_range": [args.start_date, args.end_date],
         "snapshot_trading_days": len(snapshots), "member_count": {"min": min(counts), "max": max(counts),
         "average": sum(counts) / len(counts), "distribution": {str(n): counts.count(n) for n in sorted(set(counts))}},
@@ -88,7 +91,10 @@ def main() -> None:
         "rule_version": snapshots[0][2], "rule_json": json.loads(snapshots[0][3]),
         "listing_snapshot_id": args.listing_snapshot_id, "st_backfill_run_id": args.st_backfill_run_id,
         "semantic_audit_passed": semantic_ok,
-    }, ensure_ascii=False, sort_keys=True, default=str))
+    }
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True, default=str))
+    if not semantic_ok:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

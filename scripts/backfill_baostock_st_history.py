@@ -61,10 +61,32 @@ def _start_attempt(db_path: str, run_id: str, ticker: str) -> None:
             )
 
 
-def _finish_attempt(db_path: str, run_id: str, ticker: str, rows, artifact_path: Path, artifact_hash: str) -> None:
+def _finish_attempt(db_path: str, run_id: str, ticker: str, rows, artifact_path: Path, artifact_hash: str) -> bool:
+    """Append first-seen supplier facts only; never replace a completed fact set."""
     now = datetime.now(timezone.utc)
     with writer_connection(db_path) as connection:
-        connection.execute("DELETE FROM st_history_daily WHERE backfill_run_id = ? AND ticker = ?", [run_id, ticker])
+        state = connection.execute(
+            "SELECT status, raw_artifact_sha256 FROM st_history_backfill_state WHERE backfill_run_id=? AND ticker=?",
+            [run_id, ticker],
+        ).fetchone()
+        facts = connection.execute(
+            "SELECT DISTINCT raw_artifact_sha256 FROM st_history_daily WHERE backfill_run_id=? AND ticker=?",
+            [run_id, ticker],
+        ).fetchall()
+        known_hashes = {value[0] for value in facts}
+        if state and state[0] == "SUCCEEDED" and state[1] == artifact_hash and known_hashes in (set(), {artifact_hash}):
+            return False
+        if (state and state[1] and state[1] != artifact_hash) or known_hashes - {artifact_hash}:
+            raise RuntimeError(f"EVIDENCE_CONFLICT: existing BaoStock evidence differs for {run_id} {ticker}")
+        if facts:
+            # A prior interrupted completion already wrote facts.  Its hash must
+            # match; only restore state metadata, never rewrite those facts.
+            connection.execute(
+                "UPDATE st_history_backfill_state SET status='SUCCEEDED', row_count=?, raw_artifact_path=?, "
+                "raw_artifact_sha256=?, error_text=NULL, updated_at=? WHERE backfill_run_id=? AND ticker=?",
+                [len(rows), str(artifact_path), artifact_hash, now, run_id, ticker],
+            )
+            return False
         if rows:
             connection.executemany(
                 "INSERT INTO st_history_daily VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -75,6 +97,21 @@ def _finish_attempt(db_path: str, run_id: str, ticker: str, rows, artifact_path:
             "raw_artifact_sha256 = ?, error_text = NULL, updated_at = ? WHERE backfill_run_id = ? AND ticker = ?",
             [len(rows), str(artifact_path), artifact_hash, now, run_id, ticker],
         )
+    return True
+
+
+def _store_raw_artifact(artifact_path: Path, raw_bytes: bytes, artifact_hash: str) -> None:
+    """Write-once raw evidence.  A different response is retained as conflict evidence."""
+    if artifact_path.exists():
+        existing = sha256(artifact_path.read_bytes()).hexdigest()
+        if existing == artifact_hash:
+            return
+        conflict = artifact_path.parent / "conflicts" / f"{artifact_path.stem}_{artifact_hash[:20]}{artifact_path.suffix}"
+        conflict.parent.mkdir(parents=True, exist_ok=True)
+        if not conflict.exists():
+            conflict.write_bytes(raw_bytes)
+        raise RuntimeError(f"EVIDENCE_CONFLICT: raw artifact already differs; candidate preserved at {conflict}")
+    artifact_path.write_bytes(raw_bytes)
 
 
 def _fail_attempt(db_path: str, run_id: str, ticker: str, error: Exception) -> None:
@@ -118,12 +155,13 @@ def main() -> None:
             try:
                 rows = fetch_is_st(client, ticker, start_date, end_date)
                 artifact_path = artifact_dir / f"{ticker.replace('.', '_')}.raw.json"
-                artifact_path.write_text(json.dumps({"ticker": ticker, "start_date": start_date.isoformat(),
-                                                      "end_date": end_date.isoformat(), "rows": rows},
-                                                     ensure_ascii=False, default=str, sort_keys=True), encoding="utf-8")
-                artifact_hash = sha256(artifact_path.read_bytes()).hexdigest()
-                _finish_attempt(args.db, run_id, ticker, rows, artifact_path, artifact_hash)
-                completed.append(ticker)
+                raw_bytes = json.dumps({"ticker": ticker, "start_date": start_date.isoformat(),
+                                        "end_date": end_date.isoformat(), "rows": rows}, ensure_ascii=False,
+                                       default=str, sort_keys=True).encode("utf-8")
+                artifact_hash = sha256(raw_bytes).hexdigest()
+                _store_raw_artifact(artifact_path, raw_bytes, artifact_hash)
+                if _finish_attempt(args.db, run_id, ticker, rows, artifact_path, artifact_hash):
+                    completed.append(ticker)
             except Exception as error:
                 _fail_attempt(args.db, run_id, ticker, error)
                 failed.append({"ticker": ticker, "error": str(error)})

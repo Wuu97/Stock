@@ -37,6 +37,17 @@ def _require_unique_date_ticker(records: Iterable[Mapping], endpoint: str, expec
         raise ValueError(f"Tushare {endpoint} contains duplicate date/ticker rows")
 
 
+def _positive_decimal(row: Mapping, field: str, endpoint: str) -> Decimal:
+    """Reject null, non-numeric, zero, and negative execution inputs."""
+    try:
+        value = Decimal(str(row[field]))
+    except Exception as error:
+        raise ValueError(f"Tushare {endpoint} has a non-numeric {field}") from error
+    if not value.is_finite() or value <= 0:
+        raise ValueError(f"Tushare {endpoint} has an invalid {field}")
+    return value
+
+
 def canonical_daily_evidence(trade_date: date, daily_all: list[dict], basic_all: list[dict],
                              factors_all: list[dict], limits_all: list[dict],
                              minimum_execution_market_cap: Decimal = Decimal("80000000000")) -> tuple[list[DayBar], dict[str, Decimal], dict]:
@@ -55,15 +66,25 @@ def canonical_daily_evidence(trade_date: date, daily_all: list[dict], basic_all:
     tickers = {str(row["ts_code"]) for row in daily}
     for endpoint, records in (("daily_basic", basic_all), ("adj_factor", factors_all), ("stk_limit", limits_all)):
         available = {str(row["ts_code"]) for row in records if is_mainland_a_share(str(row["ts_code"]))}
-        if endpoint == "stk_limit":
-            basic_by_ticker = {str(row["ts_code"]): Decimal(str(row["total_mv"])) * Decimal("10000")
-                               for row in basic_all if str(row["ts_code"]) in tickers}
-            required_tickers = {ticker for ticker, cap in basic_by_ticker.items() if cap >= minimum_execution_market_cap}
-        else:
-            required_tickers = tickers
-        missing = sorted(required_tickers - available)
+        missing = sorted(tickers - available)
         if missing:
             raise ValueError(f"Tushare {endpoint} is incomplete for {len(missing)} daily tickers on {trade_date}: {missing[:10]}")
+    for row in daily:
+        for field in ("open", "high", "low", "close", "vol", "amount"):
+            _positive_decimal(row, field, "daily")
+        if _positive_decimal(row, "high", "daily") < _positive_decimal(row, "low", "daily"):
+            raise ValueError("Tushare daily has high below low")
+    for row in basic_all:
+        if str(row["ts_code"]) in tickers:
+            _positive_decimal(row, "total_mv", "daily_basic")
+    for row in factors_all:
+        if str(row["ts_code"]) in tickers:
+            _positive_decimal(row, "adj_factor", "adj_factor")
+    for row in limits_all:
+        if str(row["ts_code"]) in tickers:
+            up, down = _positive_decimal(row, "up_limit", "stk_limit"), _positive_decimal(row, "down_limit", "stk_limit")
+            if up < down:
+                raise ValueError("Tushare stk_limit has up_limit below down_limit")
     raw_bars = [DayBar(
         trade_date, str(row["ts_code"]), Decimal(str(row["open"])), Decimal(str(row["high"])),
         Decimal(str(row["low"])), Decimal(str(row["close"])), int(Decimal(str(row["vol"])) * Decimal("100")),
@@ -79,8 +100,10 @@ def canonical_daily_evidence(trade_date: date, daily_all: list[dict], basic_all:
         "evidence_version": "historical_market_evidence_v1",
         "request_identity": {"provider": "tushare", "trade_date": trade_date.isoformat(),
                              "endpoints": ["daily", "daily_basic", "adj_factor", "stk_limit"]},
-        "coverage_contract": {"price_limits_required_for": "current_market_cap_at_or_above_threshold",
-                              "minimum_execution_market_cap": str(minimum_execution_market_cap)},
+        "coverage_contract": {"price_limits_required_for": "all_mainland_a_share_daily_bars",
+                              "minimum_execution_market_cap": str(minimum_execution_market_cap),
+                              "adjustment_factor_required_for": "all_mainland_a_share_daily_bars",
+                              "adjustment_factor_contract": "raw_ohlcv_and_adj_factor_are_frozen_together; execution uses raw trade-date prices"},
         "responses": {"daily": daily_all, "daily_basic": basic_all, "adj_factor": factors_all, "stk_limit": limits_all},
     }
     return bars, caps, evidence
