@@ -7,7 +7,8 @@ from .ml_shadow import FEATURE_COLUMNS
 from .ml_walk_forward import fit_ridge, predict_ridge
 from .prediction_evaluation import (ProbabilityObservation, RegressionObservation,
                                     RiskObservation, drawdown_risk_metrics,
-                                    newey_west_mean_interval, probability_metrics, regression_metrics)
+                                    daily_rank_ic_metrics, newey_west_mean_interval, probability_metrics,
+                                    rank_correlation, regression_metrics)
 
 
 def walk_forward_multitarget(rows: Iterable[Mapping], horizons=(5, 10, 20), train_window_days=480,
@@ -46,7 +47,8 @@ def _evaluate_horizon(source, horizon, train_window_days, test_window_days, wind
     first_start = _first_causal_start(dates, availability_by_date, train_window_days)
     if first_start is None:
         raise ValueError("horizon %d lacks %d causally mature dates" % (horizon, train_window_days))
-    returns, probabilities, drawdowns, periods, daily_return_errors = [], [], [], [], {}
+    returns, probabilities, drawdowns, periods, daily_return_errors, daily_rank_ics = [], [], [], [], {}, []
+    daily_return_loss_differences, daily_probability_loss_differences = {}, {}
     for start in range(first_start, len(dates), test_window_days):
         test_dates, cutoff = dates[start:start + test_window_days], dates[start - 1]
         eligible = _eligible_dates(dates[:start], availability_by_date, cutoff)
@@ -56,13 +58,21 @@ def _evaluate_horizon(source, horizon, train_window_days, test_window_days, wind
         risk_model = _fit_ridge_target(train, prefix + "max_close_drawdown", ridge_alpha)
         probability_model = _fit_logistic(train, prefix + "is_up")
         test = [row for row in frame if row["trade_date"] in test_dates]
+        base_probability = sum(float(row[prefix + "is_up"]) for row in train) / len(train)
+        predictions_by_day = {}
         for row in test:
             prediction, actual = _predict_target(return_model, row), float(row[prefix + "excess_return"])
             returns.append(RegressionObservation(prediction, actual))
             daily_return_errors.setdefault(row["trade_date"], []).append(prediction - actual)
+            daily_return_loss_differences.setdefault(row["trade_date"], []).append((prediction - actual) ** 2 - actual ** 2)
+            predictions_by_day.setdefault(row["trade_date"], []).append((prediction, actual))
             drawdowns.append(RiskObservation(max(0.0, _predict_target(risk_model, row)),
                                              float(row[prefix + "max_close_drawdown"])))
-            probabilities.append(ProbabilityObservation(_predict_logistic(probability_model, row), bool(row[prefix + "is_up"])))
+            probability, outcome = _predict_logistic(probability_model, row), float(row[prefix + "is_up"])
+            probabilities.append(ProbabilityObservation(probability, bool(outcome)))
+            daily_probability_loss_differences.setdefault(row["trade_date"], []).append((probability - outcome) ** 2 - (base_probability - outcome) ** 2)
+        daily_rank_ics.extend(rank_correlation([item[0] for item in values], [item[1] for item in values])
+                              for _, values in sorted(predictions_by_day.items()) if len(values) >= 2)
         periods.append({"train_dates": [str(train_dates[0]), str(train_dates[-1])],
                         "label_availability_cutoff_date": str(cutoff),
                         "test_dates": [str(test_dates[0]), str(test_dates[-1])], "training_rows": len(train),
@@ -70,10 +80,13 @@ def _evaluate_horizon(source, horizon, train_window_days, test_window_days, wind
     return {"label_columns": {"excess_return": prefix + "excess_return", "is_up": prefix + "is_up",
                                "max_close_drawdown": prefix + "max_close_drawdown",
                                "label_available_trade_date": prefix + "label_available_trade_date"},
-            "model_note": "Separate Ridge return/drawdown regressions and L2-regularized linear logistic baseline.",
+            "model_note": "Separate Ridge return/close-path maximum-drawdown regressions and L2-regularized linear logistic baseline.",
             "periods": periods, "return_metrics": dict(regression_metrics(returns), daily_mean_error_hac_95=newey_west_mean_interval(
-                [sum(values) / len(values) for _, values in sorted(daily_return_errors.items())])),
-            "up_probability_metrics": probability_metrics(probabilities),
+                [sum(values) / len(values) for _, values in sorted(daily_return_errors.items())]),
+                daily_rank_ic=daily_rank_ic_metrics(daily_rank_ics),
+                squared_loss_difference_vs_zero_hac_95=newey_west_mean_interval([sum(values) / len(values) for _, values in sorted(daily_return_loss_differences.items())])),
+            "up_probability_metrics": dict(probability_metrics(probabilities),
+                brier_loss_difference_vs_train_prevalence_hac_95=newey_west_mean_interval([sum(values) / len(values) for _, values in sorted(daily_probability_loss_differences.items())])),
             "drawdown_metrics": drawdown_risk_metrics(drawdowns, thresholds=(0.05, 0.10, 0.20))}
 
 
@@ -106,13 +119,12 @@ def _fit_logistic(rows, target, l2=1.0, learning_rate=0.1, iterations=25):
     if not np.isfinite(matrix).all():
         raise ValueError("logistic model received non-finite PIT features")
     labels = np.asarray([float(row[target]) for row in rows], dtype=float)
-    means, scales = matrix.mean(axis=0), matrix.std(axis=0); scales[scales == 0] = 1.0
+    with np.errstate(over="ignore", invalid="ignore"):
+        means, scales = matrix.mean(axis=0), matrix.std(axis=0)
+    scales[~np.isfinite(scales) | (scales == 0)] = 1.0
     # A near-constant feature can yield an enormous z-score from rounding noise.
     # Clip only the model input; raw PIT features and their stored artifact remain intact.
-    with np.errstate(over="ignore", invalid="ignore"):
-        normalized = (matrix - means) / scales
-    normalized = np.nan_to_num(normalized, nan=0.0, posinf=10.0, neginf=-10.0)
-    design = np.column_stack((np.ones(len(rows)), np.clip(normalized, -10.0, 10.0)))
+    design = _logistic_design(matrix, means, scales)
     weights = np.zeros(design.shape[1])
     for _ in range(iterations):
         with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
@@ -127,5 +139,19 @@ def _fit_logistic(rows, target, l2=1.0, learning_rate=0.1, iterations=25):
 
 
 def _predict_logistic(model, row):
-    value = model["intercept"] + sum(model["coefficients"][name] * ((float(row[name]) - model["means"][name]) / model["scales"][name]) for name in FEATURE_COLUMNS)
+    try:
+        import numpy as np
+    except ImportError as error:
+        raise RuntimeError("install the ML extra before running: python -m pip install -e '.[ml]'") from error
+    matrix = np.asarray([[float(row[name]) for name in FEATURE_COLUMNS]], dtype=float)
+    design = _logistic_design(matrix, np.asarray([model["means"][name] for name in FEATURE_COLUMNS]), np.asarray([model["scales"][name] for name in FEATURE_COLUMNS]))
+    value = model["intercept"] + sum(coefficient * feature for coefficient, feature in zip(model["coefficients"].values(), design[0][1:]))
     return 1.0 / (1.0 + exp(-max(-40.0, min(40.0, value))))
+
+
+def _logistic_design(matrix, means, scales):
+    import numpy as np
+    with np.errstate(over="ignore", invalid="ignore"):
+        normalized = (matrix - means) / scales
+    normalized = np.nan_to_num(normalized, nan=0.0, posinf=10.0, neginf=-10.0)
+    return np.column_stack((np.ones(len(matrix)), np.clip(normalized, -10.0, 10.0)))

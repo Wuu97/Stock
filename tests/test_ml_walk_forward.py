@@ -19,7 +19,7 @@ def test_ridge_walk_forward_trains_before_each_test_window():
     assert report["periods"][0]["test_dates"] == ["2024-01-04", "2024-01-05"]
     assert report["daily_oos"][0]["model_picks"] == ["AAA"]
     assert report["prediction_metrics"]["count"] == len(report["daily_oos"]) * 3
-    assert report["prediction_metrics"]["rank_ic"] is not None
+    assert report["prediction_metrics"]["pooled_rank_correlation"] is not None
 
 
 def test_ridge_walk_forward_excludes_labels_not_available_at_training_cutoff():

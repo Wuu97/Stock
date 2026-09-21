@@ -26,13 +26,14 @@ class RiskObservation:
 def regression_metrics(observations: Iterable[RegressionObservation]) -> dict:
     rows = tuple(observations)
     if not rows:
-        return {"count": 0, "mae": None, "rmse": None, "rank_ic": None}
+        return {"count": 0, "mae": None, "rmse": None, "pooled_rank_correlation": None}
     errors = [row.prediction - row.actual for row in rows]
     return {
         "count": len(rows),
         "mae": sum(abs(value) for value in errors) / len(errors),
         "rmse": sqrt(sum(value * value for value in errors) / len(errors)),
-        "rank_ic": rank_correlation([row.prediction for row in rows], [row.actual for row in rows]),
+        # This pools observations across dates.  It is not a daily cross-sectional Rank IC.
+        "pooled_rank_correlation": rank_correlation([row.prediction for row in rows], [row.actual for row in rows]),
     }
 
 
@@ -55,6 +56,13 @@ def newey_west_mean_interval(values: Sequence[float], lags: int = 5) -> dict:
     standard_error = sqrt(max(0.0, variance) / len(rows))
     return {"count": len(rows), "mean": mean, "lags": effective_lags, "standard_error": standard_error,
             "lower_95": mean - 1.96 * standard_error, "upper_95": mean + 1.96 * standard_error}
+
+
+def daily_rank_ic_metrics(values: Sequence[float], hac_lags: int = 5) -> dict:
+    """Aggregate daily cross-sectional Rank IC; HAC accounts for serial overlap only."""
+    interval = newey_west_mean_interval(values, hac_lags)
+    return {"daily_count": interval.pop("count"), "daily_rank_ic_mean": interval.pop("mean"),
+            "daily_rank_ic_hac_95": interval}
 
 
 def probability_metrics(observations: Iterable[ProbabilityObservation], bins: int = 10) -> dict:

@@ -20,3 +20,13 @@ def test_multitarget_walk_forward_is_causal_and_reports_all_diagnostics():
     assert result["periods"][0]["label_availability_cutoff_date"] == "2024-01-04"
     assert result["return_metrics"]["count"] == result["up_probability_metrics"]["count"] == result["drawdown_metrics"]["count"]
     assert 0 <= result["up_probability_metrics"]["brier"] <= 1
+    assert result["return_metrics"]["daily_rank_ic"]["daily_count"] > 0
+
+
+def test_logistic_prediction_reuses_bounded_feature_transform_for_extreme_values():
+    from quant_core.multitarget_walk_forward import _fit_logistic, _predict_logistic
+    rows = []
+    for signal, label in ((1e300, True), (-1e300, False), (1e-300, True), (-1e-300, False)):
+        row = {name: signal for name in FEATURE_COLUMNS}; row["target"] = label; rows.append(row)
+    model = _fit_logistic(rows, "target", iterations=3)
+    assert 0 <= _predict_logistic(model, dict(rows[0], **{FEATURE_COLUMNS[0]: 1e308})) <= 1

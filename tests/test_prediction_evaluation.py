@@ -1,8 +1,8 @@
 import pytest
 
 from quant_core.prediction_evaluation import (ProbabilityObservation, RegressionObservation, RiskObservation,
-                                              drawdown_risk_metrics, newey_west_mean_interval, probability_metrics,
-                                              regression_metrics)
+                                              daily_rank_ic_metrics, drawdown_risk_metrics, newey_west_mean_interval,
+                                              probability_metrics, regression_metrics)
 
 
 def test_regression_metrics_report_error_and_rank_information():
@@ -10,7 +10,7 @@ def test_regression_metrics_report_error_and_rank_information():
     assert metrics["count"] == 2
     assert metrics["mae"] == pytest.approx(.1)
     assert metrics["rmse"] == pytest.approx(.1)
-    assert metrics["rank_ic"] == pytest.approx(1)
+    assert metrics["pooled_rank_correlation"] == pytest.approx(1)
 
 
 def test_probability_metrics_are_bounded_and_calibrated_by_bucket():
@@ -35,3 +35,10 @@ def test_newey_west_interval_uses_available_daily_observations():
     assert result["count"] == 4
     assert result["lags"] == 3
     assert result["lower_95"] < result["mean"] < result["upper_95"]
+
+
+def test_daily_rank_ic_metrics_is_explicitly_daily_and_hac_aggregated():
+    result = daily_rank_ic_metrics([1.0, 0.0, -1.0], hac_lags=10)
+    assert result["daily_count"] == 3
+    assert result["daily_rank_ic_mean"] == 0
+    assert result["daily_rank_ic_hac_95"]["lags"] == 2
