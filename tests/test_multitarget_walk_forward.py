@@ -30,3 +30,16 @@ def test_logistic_prediction_reuses_bounded_feature_transform_for_extreme_values
         row = {name: signal for name in FEATURE_COLUMNS}; row["target"] = label; rows.append(row)
     model = _fit_logistic(rows, "target", iterations=3)
     assert 0 <= _predict_logistic(model, dict(rows[0], **{FEATURE_COLUMNS[0]: 1e308})) <= 1
+
+
+def test_generator_input_and_constant_cross_sections_record_invalid_rank_ic():
+    start, rows = date(2024, 1, 1), []
+    for offset in range(7):
+        for ticker in ("AAA", "BBB"):
+            row={"trade_date":start+timedelta(days=offset),"ticker":ticker}
+            row.update({name:0.0 for name in FEATURE_COLUMNS})
+            row.update({"t5_label_status":"MATURE","t5_label_available_trade_date":start+timedelta(days=offset),"t5_excess_return":1.0,"t5_is_up":True,"t5_max_close_drawdown":0.1})
+            rows.append(row)
+    report=walk_forward_multitarget((row for row in rows), horizons=(5,), train_window_days=3, test_window_days=2)
+    rank=report["horizons"]["5"]["return_metrics"]["daily_rank_ic"]
+    assert rank["daily_count"] == 0 and rank["invalid_dates"] > 0 and rank["daily_rank_ic_mean"] is None

@@ -1,6 +1,8 @@
 """Causal, research-only walk-forward diagnostics for multi-horizon labels."""
 
 from math import exp
+from hashlib import sha256
+import json
 from typing import Iterable, Mapping
 
 from .ml_shadow import FEATURE_COLUMNS
@@ -23,7 +25,8 @@ def walk_forward_multitarget(rows: Iterable[Mapping], horizons=(5, 10, 20), trai
         raise ValueError("window sizes must be positive and ridge alpha non-negative")
     if window_policy not in {"rolling", "expanding"}:
         raise ValueError("window policy must be rolling or expanding")
-    result = {"schema_version": "p1_multitarget_walk_forward_v1", "feature_columns": list(FEATURE_COLUMNS),
+    rows = tuple(dict(row) for row in rows)
+    result = {"schema_version": "p1_multitarget_walk_forward_v2", "feature_columns": list(FEATURE_COLUMNS),
               "train_window_days": train_window_days, "test_window_days": test_window_days,
               "window_policy": window_policy, "ridge_alpha": ridge_alpha, "horizons": {}}
     for horizon in horizons:
@@ -48,6 +51,7 @@ def _evaluate_horizon(source, horizon, train_window_days, test_window_days, wind
     if first_start is None:
         raise ValueError("horizon %d lacks %d causally mature dates" % (horizon, train_window_days))
     returns, probabilities, drawdowns, periods, daily_return_errors, daily_rank_ics = [], [], [], [], {}, []
+    prediction_records, invalid_rank_ic_reasons = [], {"insufficient_cross_section": 0, "constant_prediction": 0, "constant_actual": 0}
     daily_return_loss_differences, daily_probability_loss_differences = {}, {}
     for start in range(first_start, len(dates), test_window_days):
         test_dates, cutoff = dates[start:start + test_window_days], dates[start - 1]
@@ -57,6 +61,8 @@ def _evaluate_horizon(source, horizon, train_window_days, test_window_days, wind
         return_model = _fit_ridge_target(train, prefix + "excess_return", ridge_alpha)
         risk_model = _fit_ridge_target(train, prefix + "max_close_drawdown", ridge_alpha)
         probability_model = _fit_logistic(train, prefix + "is_up")
+        models = {"return": return_model, "drawdown": risk_model, "probability": probability_model}
+        model_hashes = {name: sha256(json.dumps(model, sort_keys=True, default=float, separators=(",", ":")).encode()).hexdigest() for name, model in models.items()}
         test = [row for row in frame if row["trade_date"] in test_dates]
         base_probability = sum(float(row[prefix + "is_up"]) for row in train) / len(train)
         predictions_by_day = {}
@@ -71,23 +77,28 @@ def _evaluate_horizon(source, horizon, train_window_days, test_window_days, wind
             probability, outcome = _predict_logistic(probability_model, row), float(row[prefix + "is_up"])
             probabilities.append(ProbabilityObservation(probability, bool(outcome)))
             daily_probability_loss_differences.setdefault(row["trade_date"], []).append((probability - outcome) ** 2 - (base_probability - outcome) ** 2)
-        daily_rank_ics.extend(rank_correlation([item[0] for item in values], [item[1] for item in values])
-                              for _, values in sorted(predictions_by_day.items()) if len(values) >= 2)
+            prediction_records.append({"trade_date": str(row["trade_date"]), "ticker": row["ticker"], "horizon_days": horizon, "as_of_trade_date": str(row["trade_date"]), "label_available_trade_date": str(row[availability_column]), "return_prediction": prediction, "return_actual": actual, "up_probability": probability, "up_actual": bool(outcome), "close_path_max_drawdown_prediction": drawdowns[-1].predicted_drawdown, "close_path_max_drawdown_actual": drawdowns[-1].actual_drawdown, "model_hashes": model_hashes})
+        for _, values in sorted(predictions_by_day.items()):
+            predicted, actuals = [item[0] for item in values], [item[1] for item in values]
+            if len(values) < 2: invalid_rank_ic_reasons["insufficient_cross_section"] += 1
+            elif len(set(predicted)) < 2: invalid_rank_ic_reasons["constant_prediction"] += 1
+            elif len(set(actuals)) < 2: invalid_rank_ic_reasons["constant_actual"] += 1
+            else: daily_rank_ics.append(rank_correlation(predicted, actuals))
         periods.append({"train_dates": [str(train_dates[0]), str(train_dates[-1])],
                         "label_availability_cutoff_date": str(cutoff),
                         "test_dates": [str(test_dates[0]), str(test_dates[-1])], "training_rows": len(train),
-                        "test_rows": len(test)})
+                        "test_rows": len(test), "model_hashes": model_hashes})
     return {"label_columns": {"excess_return": prefix + "excess_return", "is_up": prefix + "is_up",
                                "max_close_drawdown": prefix + "max_close_drawdown",
                                "label_available_trade_date": prefix + "label_available_trade_date"},
             "model_note": "Separate Ridge return/close-path maximum-drawdown regressions and L2-regularized linear logistic baseline.",
             "periods": periods, "return_metrics": dict(regression_metrics(returns), daily_mean_error_hac_95=newey_west_mean_interval(
                 [sum(values) / len(values) for _, values in sorted(daily_return_errors.items())]),
-                daily_rank_ic=daily_rank_ic_metrics(daily_rank_ics),
+                daily_rank_ic=dict(daily_rank_ic_metrics(daily_rank_ics), total_dates=sum(invalid_rank_ic_reasons.values()) + len(daily_rank_ics), valid_dates=len(daily_rank_ics), invalid_dates=sum(invalid_rank_ic_reasons.values()), invalid_reasons=invalid_rank_ic_reasons),
                 squared_loss_difference_vs_zero_hac_95=newey_west_mean_interval([sum(values) / len(values) for _, values in sorted(daily_return_loss_differences.items())])),
             "up_probability_metrics": dict(probability_metrics(probabilities),
                 brier_loss_difference_vs_train_prevalence_hac_95=newey_west_mean_interval([sum(values) / len(values) for _, values in sorted(daily_probability_loss_differences.items())])),
-            "drawdown_metrics": drawdown_risk_metrics(drawdowns, thresholds=(0.05, 0.10, 0.20))}
+            "drawdown_metrics": drawdown_risk_metrics(drawdowns, thresholds=(0.05, 0.10, 0.20)), "prediction_records": prediction_records}
 
 
 def _eligible_dates(dates, availability_by_date, cutoff):
