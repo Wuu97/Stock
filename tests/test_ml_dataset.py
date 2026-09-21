@@ -3,8 +3,10 @@ from decimal import Decimal
 
 import pytest
 
-from quant_core.ml_dataset import BenchmarkIncompleteError, SnapshotMissingError, build_cross_sectional_dataset
+from quant_core.ml_dataset import (BenchmarkIncompleteError, SnapshotMissingError, build_cross_sectional_dataset,
+                                   build_multihorizon_cross_sectional_dataset)
 from quant_core.models import DayBar
+from quant_core.prediction_labels import MATURE, UNMATURED, PredictionTarget
 
 
 def _bar(day, ticker, close):
@@ -70,3 +72,33 @@ def test_cross_section_features_do_not_depend_on_future_prices():
     assert [(row.trade_date, row.momentum_20d, row.momentum_20d_zscore) for row in baseline[:-1]] == [
         (row.trade_date, row.momentum_20d, row.momentum_20d_zscore) for row in revised[:-1]
     ]
+
+
+def test_multihorizon_dataset_keeps_each_horizon_status_separate():
+    calendar, bars, adjusted, benchmark, universe = _inputs(40)
+    universe = {day: {"000001.SZ"} for day in calendar[19:]}
+    rows = build_multihorizon_cross_sectional_dataset(
+        bars, calendar, universe, adjusted, benchmark, calendar[19], calendar[-1],
+        (PredictionTarget(5), PredictionTarget(10), PredictionTarget(20)),
+    )
+    first, mixed, tail = rows[0], rows[1], rows[-1]
+    assert first.labels[5].status == MATURE
+    assert first.labels[10].label_available_trade_date == calendar[29]
+    assert tail.labels[5].status == UNMATURED
+    flattened = mixed.as_dict()
+    assert flattened["t20_label_status"] == UNMATURED
+    assert flattened["t5_is_up"] is True
+
+
+def test_multihorizon_features_ignore_future_raw_bar_changes():
+    calendar, bars, adjusted, benchmark, _ = _inputs(45)
+    universe = {day: {"000001.SZ"} for day in calendar[19:]}
+    baseline = build_multihorizon_cross_sectional_dataset(
+        bars, calendar, universe, adjusted, benchmark, calendar[19], calendar[-1], (PredictionTarget(5),)
+    )
+    changed_bars = list(bars)
+    changed_bars[-1] = _bar(calendar[-1], "000001.SZ", Decimal("999"))
+    revised = build_multihorizon_cross_sectional_dataset(
+        changed_bars, calendar, universe, adjusted, benchmark, calendar[19], calendar[-1], (PredictionTarget(5),)
+    )
+    assert baseline[0].as_dict()["momentum_20d"] == revised[0].as_dict()["momentum_20d"]

@@ -4,6 +4,7 @@ from math import sqrt
 from typing import Iterable, Mapping, Sequence
 
 from .ml_shadow import FEATURE_COLUMNS
+from .prediction_evaluation import RegressionObservation, regression_metrics
 
 
 def rank_ic(predictions: Sequence[float], actuals: Sequence[float]):
@@ -27,7 +28,7 @@ def walk_forward_ridge(rows: Iterable[Mapping], train_window_days: int = 480, te
     frame = sorted((dict(row) for row in rows if row["label_status"] == "MATURE"),
                    key=lambda row: (row["trade_date"], row["ticker"]))
     dates = sorted({row["trade_date"] for row in frame})
-    periods, daily = [], []
+    periods, daily, observations = [], [], []
     first_start = None
     for candidate in range(1, len(dates)):
         cutoff = dates[candidate - 1]
@@ -53,6 +54,7 @@ def walk_forward_ridge(rows: Iterable[Mapping], train_window_days: int = 480, te
         model = fit_ridge(train, ridge_alpha)
         for row in test:
             row["prediction"] = predict_ridge(model, row)
+            observations.append(RegressionObservation(row["prediction"], row["target_excess_ret_5d"]))
         period_daily = []
         for trade_date in test_dates:
             cross_section = [row for row in test if row["trade_date"] == trade_date]
@@ -87,7 +89,8 @@ def walk_forward_ridge(rows: Iterable[Mapping], train_window_days: int = 480, te
             "periods": periods, "daily_oos": daily,
             "rank_ic_mean": _mean(row["rank_ic"] for row in daily),
             "model_top_excess_return_gross_mean": _mean(row["model_top_excess_return_gross"] for row in daily),
-            "baseline_top_excess_return_gross_mean": _mean(row["baseline_top_excess_return_gross"] for row in daily)}
+            "baseline_top_excess_return_gross_mean": _mean(row["baseline_top_excess_return_gross"] for row in daily),
+            "prediction_metrics": regression_metrics(observations)}
 
 
 def fit_ridge(rows: Sequence[Mapping], ridge_alpha: float) -> dict:

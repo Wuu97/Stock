@@ -7,6 +7,7 @@ from math import sqrt
 from typing import Iterable, Mapping, Optional, Sequence
 
 from .models import DayBar
+from .prediction_labels import PredictionLabel, PredictionTarget, build_prediction_label
 
 
 class SnapshotMissingError(ValueError):
@@ -34,6 +35,44 @@ class DatasetRow:
 
     def as_dict(self) -> dict:
         return asdict(self) | {"trade_date": self.trade_date.isoformat()}
+
+
+@dataclass(frozen=True)
+class MultiHorizonDatasetRow:
+    """Features plus independently available outcome labels for P1 research.
+
+    This intentionally has a separate type from ``DatasetRow`` so existing
+    frozen T+5 artifacts retain their schema and semantic identity.
+    """
+
+    trade_date: date
+    ticker: str
+    close: float
+    momentum_5d: float
+    momentum_20d: float
+    sma20_deviation: float
+    volume_ratio_20d: float
+    momentum_20d_percentile: float
+    momentum_20d_zscore: float
+    labels: Mapping[int, PredictionLabel]
+
+    def as_dict(self) -> dict:
+        payload = asdict(self)
+        payload["trade_date"] = self.trade_date.isoformat()
+        payload.pop("labels")
+        for horizon, label in sorted(self.labels.items()):
+            prefix = "t{}".format(horizon)
+            payload.update({
+                prefix + "_label_status": label.status,
+                prefix + "_label_available_trade_date": (None if label.label_available_trade_date is None
+                                                           else label.label_available_trade_date.isoformat()),
+                prefix + "_abs_return": None if label.absolute_return is None else float(label.absolute_return),
+                prefix + "_excess_return": None if label.excess_return is None else float(label.excess_return),
+                prefix + "_is_up": label.is_up,
+                prefix + "_max_close_drawdown": (None if label.max_close_drawdown is None
+                                                   else float(label.max_close_drawdown)),
+            })
+        return payload
 
 
 def build_cross_sectional_dataset(
@@ -109,6 +148,66 @@ def build_cross_sectional_dataset(
         rows.extend(DatasetRow(trade_date=trade_date, momentum_20d_percentile=percentile[index],
                                momentum_20d_zscore=zscore[index], **row)
                     for index, row in enumerate(raw_rows))
+    return rows
+
+
+def build_multihorizon_cross_sectional_dataset(
+    bars: Iterable[DayBar], calendar: Sequence[date], universe_by_date: Mapping[date, set[str]],
+    adjusted_closes: Mapping[tuple[date, str], Decimal], benchmark_adjusted_closes: Mapping[date, Decimal],
+    start_date: date, end_date: date, targets: Sequence[PredictionTarget], lookback_days: int = 20,
+) -> list[MultiHorizonDatasetRow]:
+    """Build a new-schema P1 dataset without changing the frozen T+5 builder.
+
+    Every requested decision date is retained once its raw features exist.  Each
+    horizon then independently reports mature, unmatured, or untradeable
+    status, preventing a shorter horizon from hiding a longer-horizon tail.
+    """
+    if lookback_days < 6:
+        raise ValueError("lookback_days must be at least six")
+    if not targets or len({target.horizon_days for target in targets}) != len(targets):
+        raise ValueError("targets must have unique positive horizons")
+    days = tuple(calendar)
+    if len(set(days)) != len(days) or tuple(sorted(days)) != days:
+        raise ValueError("calendar must be unique and sorted")
+    by_ticker: dict[str, list[DayBar]] = {}
+    for bar in bars:
+        if bar.status == "TRADING":
+            by_ticker.setdefault(bar.ticker, []).append(bar)
+    for history in by_ticker.values():
+        history.sort(key=lambda bar: bar.trade_date)
+    rows: list[MultiHorizonDatasetRow] = []
+    for trade_date in days:
+        if not start_date <= trade_date <= end_date:
+            continue
+        if trade_date not in universe_by_date:
+            raise SnapshotMissingError("point-in-time universe snapshot is missing for: {}".format(trade_date.isoformat()))
+        raw_rows = []
+        for ticker in sorted(universe_by_date[trade_date]):
+            history = [bar for bar in by_ticker.get(ticker, ()) if bar.trade_date <= trade_date]
+            if len(history) < lookback_days:
+                raise SnapshotMissingError("raw feature history is incomplete for {} on {}".format(ticker, trade_date.isoformat()))
+            window = history[-lookback_days:]
+            if window[-1].trade_date != trade_date:
+                raise SnapshotMissingError("raw feature bar is missing for {} on {}".format(ticker, trade_date.isoformat()))
+            closes, volumes = [bar.close for bar in window], [bar.volume for bar in window]
+            average_volume = Decimal(sum(volumes)) / len(volumes)
+            raw_rows.append({
+                "ticker": ticker, "close": float(closes[-1]),
+                "momentum_5d": float((closes[-1] / closes[-6]) - Decimal("1")),
+                "momentum_20d": float((closes[-1] / closes[0]) - Decimal("1")),
+                "sma20_deviation": float((closes[-1] / (sum(closes) / len(closes))) - Decimal("1")),
+                "volume_ratio_20d": float(Decimal(volumes[-1]) / average_volume) if average_volume else 0.0,
+            })
+        percentile, zscore = _cross_section_statistics([row["momentum_20d"] for row in raw_rows])
+        for index, row in enumerate(raw_rows):
+            labels = {target.horizon_days: build_prediction_label(
+                target=target, calendar=days, decision_trade_date=trade_date, ticker=row["ticker"],
+                adjusted_closes=adjusted_closes, benchmark_adjusted_closes=benchmark_adjusted_closes,
+            ) for target in targets}
+            rows.append(MultiHorizonDatasetRow(
+                trade_date=trade_date, momentum_20d_percentile=percentile[index],
+                momentum_20d_zscore=zscore[index], labels=labels, **row,
+            ))
     return rows
 
 

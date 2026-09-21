@@ -51,6 +51,21 @@ def _load_rows(dataset_path: str):
     return rows
 
 
+def causal_training_dates(rows, dates, start, train_window_days, window_policy):
+    """Return only decision dates whose outcomes were observable at the cutoff."""
+    if start <= 0:
+        return []
+    cutoff = dates[start - 1]
+    by_date = {}
+    for row in rows:
+        by_date.setdefault(row["trade_date"], []).append(row)
+    eligible = [day for day in dates[:start] if all(
+        row.get("label_available_trade_date") is not None and row["label_available_trade_date"] <= cutoff
+        for row in by_date[day]
+    )]
+    return eligible if window_policy == "expanding" else eligible[-train_window_days:]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", required=True)
@@ -72,12 +87,13 @@ def main() -> None:
     frame = [row for row in frame if row["label_status"] == "MATURE"]
     dates = sorted({row["trade_date"] for row in frame})
     periods, daily = [], []
-    for start in range(args.train_window_days, len(dates), args.test_window_days):
-        train_start = 0 if args.window_policy == "expanding" else start - args.train_window_days
+    for start in range(1, len(dates), args.test_window_days):
         test_dates = dates[start:start + args.test_window_days]
         if not test_dates:
             break
-        train_dates = dates[train_start:start]
+        train_dates = causal_training_dates(frame, dates, start, args.train_window_days, args.window_policy)
+        if len(train_dates) < args.train_window_days:
+            continue
         train_rows = [row for row in frame if row["trade_date"] in train_dates]
         test = [dict(row) for row in frame if row["trade_date"] in test_dates]
         model_params = {"objective": "regression", "learning_rate": 0.03, "num_leaves": 15,
